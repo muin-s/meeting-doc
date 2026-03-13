@@ -4,6 +4,7 @@ whitenoise
 gunicorn
 djangorestframework
 django-cors-headers
+django-filters
 psycopg2-binary
 djangorestframework-simplejwt
 youtube-transcript-api
@@ -12,3 +13,6 @@ Pillow
 requests
 yt-dlp
 numpy
+celery
+redis
+django-celery-results

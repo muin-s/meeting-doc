@@ -21,6 +21,8 @@ from apps.meetings.services.frame_extractor import extract_hd_frame
 from apps.meetings.services.keyword_scanner import scan_for_key_timestamps
 from apps.meetings.services.frame_grabber import grab_frames_at_timestamps
 from apps.meetings.services.unified_processor import process_meeting
+from apps.meetings.tasks import process_meeting_task
+from celery.result import AsyncResult
 
 
 def get_or_create_session_key(request):
@@ -187,63 +189,93 @@ class MeetingViewSet(ModelViewSet):
         transcript_text = request.data.get("transcript_text", "")
         transcript_timestamps = request.data.get("transcript_timestamps", [])
         video_id = request.data.get("video_id", "")
+        meeting_id = request.data.get("meeting_id", None)
 
-        if not transcript_text:
-            return Response({"error": "transcript_text is required"}, status=400)
-        if len(transcript_text.strip()) < 50:
+        if not transcript_text or len(transcript_text.strip()) < 50:
             return Response({"error": "Transcript too short"}, status=400)
 
-        # Step 1: find semantic timestamps
-        key_timestamps = scan_for_key_timestamps(
-            transcript_timestamps,
-            max_frames=5,
-            min_gap_seconds=30
-        )
-        timestamp_seconds_list = [t["timestamp_seconds"] for t in key_timestamps]
+        # Get meeting instance if id provided, otherwise try to find it
+        session_key = get_or_create_session_key(request)
+        if not meeting_id:
+            m = Meeting.objects.filter(video_id=video_id, session_key=session_key).first()
+            if m:
+                meeting_id = str(m.id)
 
-        # Step 2: grab sprite thumbnails at those timestamps
-        frames = []
-        if video_id and timestamp_seconds_list:
-            frames = grab_frames_at_timestamps(video_id, timestamp_seconds_list)
+        try:
+            # Send to Celery background worker
+            task = process_meeting_task.delay(
+                transcript_text=transcript_text,
+                transcript_timestamps=transcript_timestamps,
+                video_id=video_id,
+                meeting_id=meeting_id,
+            )
 
-            # Merge category info into frames
+            return Response({
+                "task_id": task.id,
+                "status": "processing",
+                "message": "Processing started in background"
+            })
+        except Exception as e:
+            # Redis not available fallback — run synchronously
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Celery failed, falling back to sync: {e}")
+            
+            # Re-collect logic for sync fallback (same as the task)
+            key_timestamps = scan_for_key_timestamps(transcript_timestamps, max_frames=5, min_gap_seconds=30)
+            timestamp_seconds_list = [t["timestamp_seconds"] for t in key_timestamps]
+            frames = grab_frames_at_timestamps(video_id, timestamp_seconds_list) if (video_id and timestamp_seconds_list) else []
             for i, frame in enumerate(frames):
                 if i < len(key_timestamps):
                     frame["category"] = key_timestamps[i]["category"]
-                    frame["matched_text"] = key_timestamps[i]["matched_text"]
+            
+            result = process_meeting(transcript_text, frames, video_id)
+            
+            # Save to DB manually
+            if meeting_id:
+                m = Meeting.objects.get(id=meeting_id)
+                m.summary = result.get("summary", "")
+                m.key_decisions = result.get("key_decisions", [])
+                m.participants_detected = result.get("participants_detected", [])
+                m.visual_frames = result.get("visual_frames", [])
+                m.is_processed = True
+                m.save()
+            
+            return Response(result)
 
-        # Step 3: single Gemini Vision call
-        result = process_meeting(transcript_text, frames, video_id)
-
-        # Save to DB
-        session_key = get_or_create_session_key(request)
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="task-status/(?P<task_id>[^/.]+)",
+        permission_classes=[AllowAny]
+    )
+    def task_status(self, request, task_id=None):
         try:
-            meeting = Meeting.objects.get(video_id=video_id, session_key=session_key)
-            meeting.summary = result.get("summary", "")
-            meeting.key_decisions = result.get("key_decisions", [])
-            meeting.participants_detected = result.get("participants_detected", [])
-            meeting.visual_frames = result.get("visual_frames", [])
-            meeting.is_processed = True
-            meeting.save()
+            result = AsyncResult(task_id)
+            state = result.state
 
-            # Also save action items
-            ActionItem.objects.filter(meeting=meeting).delete()
-            for item in result.get("action_items", []):
-                ActionItem.objects.create(
-                    meeting=meeting,
-                    description=item["description"],
-                    assignee_name=item.get("assignee") or "",
-                    priority=item.get("priority", "medium"),
-                    due_date=item.get("due_date")
-                )
-        except Meeting.DoesNotExist:
-            pass
+            if state == "PENDING":
+                return Response({"status": "pending"})
+            elif state == "STARTED":
+                return Response({"status": "processing"})
+            elif state == "SUCCESS":
+                return Response({
+                    "status": "complete",
+                    "result": result.get()
+                })
+            elif state == "FAILURE":
+                return Response({
+                    "status": "failed",
+                    "error": str(result.info)
+                }, status=500)
+            else:
+                return Response({"status": state.lower()})
 
-        print(f"Key timestamps found: {timestamp_seconds_list}")
-        print(f"Frames grabbed: {len(frames)}")
-        print(f"Frames with thumbnails: {sum(1 for f in frames if f.get('thumbnail_base64'))}")
-
-        return Response(result)
+        except Exception as e:
+            return Response({
+                "status": "error",
+                "error": str(e)
+            }, status=500)
 
     @action(detail=False, methods=["get"],
             url_path="history",

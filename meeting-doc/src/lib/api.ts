@@ -93,7 +93,7 @@ export async function processMeeting(
   transcriptText: string,
   transcriptTimestamps: Array<{ text: string; start: number; duration: number }>,
   videoId: string
-): Promise<MeetingProcessResult> {
+): Promise<any> {
   return fetcher("/api/v1/meetings/process-meeting/", {
     method: "POST",
     body: JSON.stringify({
@@ -102,4 +102,40 @@ export async function processMeeting(
       video_id: videoId,
     }),
   });
+}
+
+export async function pollTaskStatus(
+  taskId: string,
+  onProgress: (status: string) => void,
+  onComplete: (result: MeetingProcessResult) => void,
+  onError: (error: string) => void,
+  maxWaitMs = 300000
+): Promise<void> {
+  const startTime = Date.now();
+
+  const poll = async () => {
+    if (Date.now() - startTime > maxWaitMs) {
+      onError("Processing timed out. Please try again.");
+      return;
+    }
+
+    try {
+      const data = await fetcher<any>(
+        `/api/v1/meetings/task-status/${taskId}/`
+      );
+
+      if (data.status === "complete") {
+        onComplete(data.result);
+      } else if (data.status === "failed") {
+        onError(data.error || "Processing failed");
+      } else {
+        onProgress(data.status);
+        setTimeout(poll, 2000);
+      }
+    } catch (err) {
+      onError("Failed to check processing status");
+    }
+  };
+
+  poll();
 }

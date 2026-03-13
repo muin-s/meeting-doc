@@ -34,7 +34,7 @@ import {
   LayoutDashboard,
   Code as CodeIconLucide,
 } from "lucide-react";
-import { getMeetings, fetchYoutubeTranscript, processMeeting } from "@/lib/api";
+import { getMeetings, fetchYoutubeTranscript, processMeeting, pollTaskStatus } from "@/lib/api";
 import { Meeting, MeetingProcessResult } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -55,13 +55,25 @@ export default function MeetingDocApp() {
   
   // New unified result state
   const [meetingResult, setMeetingResult] = useState<MeetingProcessResult | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-
-  // Interaction states
-  const [activeTab, setActiveTab] = useState("transcript");
-  const [glowFrameIndex, setGlowFrameIndex] = useState<number | null>(null);
-  const [pastMeetings, setPastMeetings] = useState<any[]>([]);
+  const [processingStatus, setProcessingStatus] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
+
+  const PROGRESS_MESSAGES = [
+    "Scanning visual frames...",
+    "Analysing with Gemini Vision...",
+    "Extracting action items...",
+    "Building knowledge graph...",
+    "Almost done...",
+  ];
+  const [progressMsgIndex, setProgressMsgIndex] = useState(0);
+
+  useEffect(() => {
+    if (!isProcessing) return;
+    const interval = setInterval(() => {
+      setProgressMsgIndex(i => (i + 1) % PROGRESS_MESSAGES.length);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isProcessing]);
 
   useEffect(() => {
     async function loadData() {
@@ -127,21 +139,50 @@ export default function MeetingDocApp() {
     try {
       setIsProcessing(true);
       setError(null);
-      const result = await processMeeting(
+      setProgressMsgIndex(0);
+
+      // Create a meeting record first if doesn't exist? 
+      // Actually fetch-transcript already creates it with is_processed=False.
+      // We just need to trigger process-meeting.
+
+      const response = await processMeeting(
         fetchedTranscript,
         transcriptTimestamps,
         transcriptMetadata.video_id
       );
-      setMeetingResult(result);
-      setActiveTab("summary"); // Switch to summary on success
 
-      // Refresh history
-      const history = await fetch(`${BASE}/api/v1/meetings/history/`).then(r => r.json());
-      setPastMeetings(Array.isArray(history) ? history : []);
+      if (response.task_id) {
+        // Celery async mode
+        await pollTaskStatus(
+          response.task_id,
+          (status) => setProcessingStatus(status),
+          async (result) => {
+            setMeetingResult(result);
+            setIsProcessing(false);
+            setActiveTab("summary");
+
+            // Refresh history
+            const history = await fetch(`${BASE}/api/v1/meetings/history/`).then(r => r.json());
+            setPastMeetings(Array.isArray(history) ? history : []);
+          },
+          (error) => {
+            setError(error);
+            setIsProcessing(false);
+          }
+        );
+      } else {
+        // Direct result fallback (sync mode)
+        setMeetingResult(response);
+        setIsProcessing(false);
+        setActiveTab("summary");
+
+        // Refresh history
+        const history = await fetch(`${BASE}/api/v1/meetings/history/`).then(r => r.json());
+        setPastMeetings(Array.isArray(history) ? history : []);
+      }
     } catch (err: any) {
       console.error("Failed to process meeting:", err);
       setError(err.message || "Failed to process meeting");
-    } finally {
       setIsProcessing(false);
     }
   };
@@ -285,15 +326,15 @@ export default function MeetingDocApp() {
                   </div>
                   
                   {fetchedTranscript && !meetingResult?.summary && (
-                    <Button
-                      onClick={handleProcessMeeting}
+                    <Button 
+                      onClick={handleProcessMeeting} 
                       disabled={isProcessing}
-                      className="w-full h-11 bg-violet-600 hover:bg-violet-700 text-white shadow-violet-500/10 shadow-lg mt-2"
+                      className="w-full h-11 bg-indigo-600 hover:bg-indigo-700 text-white font-medium shadow-lg shadow-indigo-500/20 transition-all active:scale-[0.98]"
                     >
                       {isProcessing ? (
                         <>
                           <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                          Analysing with Gemini Vision...
+                          {PROGRESS_MESSAGES[progressMsgIndex]}
                         </>
                       ) : (
                         <>
