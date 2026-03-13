@@ -15,7 +15,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipProvider, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import {
   Video,
   FileText,
@@ -31,9 +31,11 @@ import {
   AlertCircle,
   Youtube,
   Send,
+  LayoutDashboard,
+  Code as CodeIconLucide,
 } from "lucide-react";
-import { getMeetings, fetchYoutubeTranscript, processTranscript, analyzeContext } from "@/lib/api";
-import { Meeting, AIResult, KeyMoment } from "@/types";
+import { getMeetings, fetchYoutubeTranscript, processMeeting } from "@/lib/api";
+import { Meeting, MeetingProcessResult } from "@/types";
 
 export default function MeetingDocApp() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -46,24 +48,11 @@ export default function MeetingDocApp() {
     video_id: string;
     word_count: number;
   } | null>(null);
-  const [aiResult, setAiResult] = useState<AIResult | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-
   const [transcriptTimestamps, setTranscriptTimestamps] = useState<Array<{text: string, start: number, duration: number}>>([]);
-  const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
-  const [isAnalyzingContext, setIsAnalyzingContext] = useState(false);
-
-  async function handleAnalyzeContext(videoId: string, timestamps: Array<{text: string, start: number, duration: number}>) {
-    try {
-      setIsAnalyzingContext(true);
-      const result = await analyzeContext(videoId, timestamps);
-      setKeyMoments(result.key_moments);
-    } catch (err) {
-      console.error("Context analysis failed:", err);
-    } finally {
-      setIsAnalyzingContext(false);
-    }
-  }
+  
+  // New unified result state
+  const [meetingResult, setMeetingResult] = useState<MeetingProcessResult | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
     async function loadData() {
@@ -87,6 +76,7 @@ export default function MeetingDocApp() {
     try {
       setIsFetchingTranscript(true);
       setError(null);
+      setMeetingResult(null); // Clear previous results
       const result = await fetchYoutubeTranscript(youtubeUrl);
       setFetchedTranscript(result.transcript_text);
       setTranscriptMetadata({
@@ -97,9 +87,6 @@ export default function MeetingDocApp() {
       if (result.transcript_timestamps) {
         setTranscriptTimestamps(result.transcript_timestamps);
       }
-      if (result.video_id && result.transcript_timestamps) {
-        handleAnalyzeContext(result.video_id, result.transcript_timestamps);
-      }
     } catch (err: any) {
       console.error("Failed to fetch transcript:", err);
       setError(err.message || "Failed to fetch transcript from YouTube.");
@@ -108,16 +95,20 @@ export default function MeetingDocApp() {
     }
   };
 
-  const handleProcessTranscript = async () => {
-    if (!fetchedTranscript) return;
+  const handleProcessMeeting = async () => {
+    if (!fetchedTranscript || !transcriptMetadata) return;
     try {
       setIsProcessing(true);
       setError(null);
-      const result = await processTranscript(fetchedTranscript);
-      setAiResult(result);
+      const result = await processMeeting(
+        fetchedTranscript,
+        transcriptTimestamps,
+        transcriptMetadata.video_id
+      );
+      setMeetingResult(result);
     } catch (err: any) {
-      console.error("Failed to process transcript:", err);
-      setError(err.message || "Failed to process transcript.");
+      console.error("Failed to process meeting:", err);
+      setError(err.message || "Failed to process meeting");
     } finally {
       setIsProcessing(false);
     }
@@ -133,6 +124,10 @@ export default function MeetingDocApp() {
       </div>
     );
   }
+
+  // Find frames for Detected Context section
+  const architectureFrame = meetingResult?.visual_frames?.find(f => f.has_diagram);
+  const codeFrame = meetingResult?.visual_frames?.find(f => f.has_code);
 
   return (
     <div className="flex h-screen flex-col bg-zinc-950 font-sans text-zinc-50 overflow-hidden">
@@ -162,10 +157,10 @@ export default function MeetingDocApp() {
         <div className="flex items-center gap-4">
           <TooltipProvider>
             <Tooltip>
-              <TooltipTrigger
-                className="h-10 w-10 cursor-pointer rounded-full border border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 hover:text-white inline-flex items-center justify-center"
-              >
-                <Share className="h-4 w-4" />
+              <TooltipTrigger asChild>
+                <div className="h-10 w-10 cursor-pointer rounded-full border border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 hover:text-white inline-flex items-center justify-center">
+                  <Share className="h-4 w-4" />
+                </div>
               </TooltipTrigger>
               <TooltipContent className="bg-zinc-800 text-zinc-200 border-zinc-700">Share Asset</TooltipContent>
             </Tooltip>
@@ -226,14 +221,14 @@ export default function MeetingDocApp() {
                   
                   {fetchedTranscript && (
                     <Button
-                      onClick={handleProcessTranscript}
+                      onClick={handleProcessMeeting}
                       disabled={isProcessing}
                       className="w-full h-11 bg-violet-600 hover:bg-violet-700 text-white shadow-violet-500/10 shadow-lg mt-2"
                     >
                       {isProcessing ? (
                         <>
                           <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                          Analysing with Gemini...
+                          Analysing with Gemini Vision...
                         </>
                       ) : (
                         <>
@@ -294,89 +289,63 @@ export default function MeetingDocApp() {
                   <h3 className="text-lg font-semibold tracking-tight text-zinc-100">Detected Context (AI)</h3>
                 </div>
 
-                {isAnalyzingContext && keyMoments.length === 0 && (
-                  <div className="flex items-center gap-2 text-zinc-500 text-sm mb-4">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Analyzing visual context...</span>
-                  </div>
-                )}
-
-                {keyMoments.length > 0 ? (
-                  <div className="grid grid-cols-2 gap-4">
-                    {keyMoments.map((moment) => (
-                      <Card key={moment.timestamp_seconds} className="border-zinc-800 bg-zinc-900/40">
-                        <CardHeader className="pb-2">
-                          <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                            <span className="p-1.5 rounded-md bg-indigo-500/10 text-indigo-400">
-                              <Sparkles className="w-3.5 h-3.5" />
-                            </span>
-                            {moment.label}
-                          </CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          {moment.frame_url ? (
-                            <img
-                              src={`http://127.0.0.1:8000${moment.frame_url}`}
-                              alt={moment.label}
-                              className="h-20 w-full object-cover rounded-md"
-                            />
-                          ) : (
-                            <div className="h-20 w-full bg-zinc-800/30 rounded-md flex items-center justify-center">
-                              <Bot className="h-6 w-6 text-zinc-700" />
-                            </div>
-                          )}
-                          <div className="mt-2 flex items-center justify-between text-[10px] text-zinc-500">
-                            <span className="truncate mr-2 text-left">{moment.description}</span>
-                            <a
-                              href={moment.youtube_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-indigo-400 hover:text-indigo-300 shrink-0"
-                            >
-                              {Math.floor(moment.timestamp_seconds / 60)}:
-                              {String(moment.timestamp_seconds % 60).padStart(2, "0")}
-                            </a>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-4 opacity-50">
-                    <Card className="border-zinc-800 bg-zinc-900/40 cursor-not-allowed">
-                      <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                          <span className="p-1.5 rounded-md bg-blue-500/10 text-blue-400">
-                            <FileText className="w-3.5 h-3.5" />
-                          </span>
-                          Architecture Diagram
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent>
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Architecture card */}
+                  <Card className={`border-zinc-800 bg-zinc-900/40 ${!architectureFrame ? "opacity-50 cursor-not-allowed" : ""}`}>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                        <span className="p-1.5 rounded-md bg-blue-500/10 text-blue-400">
+                          <LayoutDashboard className="w-3.5 h-3.5" />
+                        </span>
+                        Architecture Diagram
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {architectureFrame?.thumbnail_data_url ? (
+                        <img
+                          src={architectureFrame.thumbnail_data_url}
+                          alt={architectureFrame.label}
+                          className="h-20 w-full object-cover rounded-md"
+                        />
+                      ) : (
                         <div className="h-20 w-full bg-zinc-800/30 rounded-md flex items-center justify-center">
                           <Bot className="h-6 w-6 text-zinc-700" />
                         </div>
-                        <div className="mt-2 text-[10px] text-zinc-600">Analysis Pending</div>
-                      </CardContent>
-                    </Card>
-                    <Card className="border-zinc-800 bg-zinc-900/40 cursor-not-allowed">
-                      <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                          <span className="p-1.5 rounded-md bg-green-500/10 text-green-400">
-                            <CodeIcon className="w-3.5 h-3.5" />
-                          </span>
-                          Code Walkthrough
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="h-20 w-full bg-zinc-800/30 rounded-md flex items-center justify-center font-mono text-[8px] text-zinc-700">
-                          PROCESSING...
+                      )}
+                      <div className="mt-2 text-[10px] text-zinc-500">
+                        {architectureFrame ? architectureFrame.label : "Analysis Pending"}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Code card */}
+                  <Card className={`border-zinc-800 bg-zinc-900/40 ${!codeFrame ? "opacity-50 cursor-not-allowed" : ""}`}>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                        <span className="p-1.5 rounded-md bg-green-500/10 text-green-400">
+                          <CodeIconLucide className="w-3.5 h-3.5" />
+                        </span>
+                        Code Walkthrough
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {codeFrame?.thumbnail_data_url ? (
+                        <img
+                          src={codeFrame.thumbnail_data_url}
+                          alt={codeFrame.label}
+                          className="h-20 w-full object-cover rounded-md"
+                        />
+                      ) : (
+                        <div className="h-20 w-full bg-zinc-800/30 rounded-md flex items-center justify-center">
+                          <Bot className="h-6 w-6 text-zinc-700" />
                         </div>
-                        <div className="mt-2 text-[10px] text-zinc-600">Analysis Pending</div>
-                      </CardContent>
-                    </Card>
-                  </div>
-                )}
+                      )}
+                      <div className="mt-2 text-[10px] text-zinc-500">
+                        {codeFrame ? codeFrame.label : "Analysis Pending"}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
               </div>
 
             </ScrollArea>
@@ -403,6 +372,12 @@ export default function MeetingDocApp() {
                     Action Items
                   </TabsTrigger>
                   <TabsTrigger
+                    value="visual-frames"
+                    className="data-[state=active]:bg-zinc-800 data-[state=active]:text-indigo-300 rounded-md rounded-b-none px-6 transition-all"
+                  >
+                    Visual Frames
+                  </TabsTrigger>
+                  <TabsTrigger
                     value="transcript"
                     className="data-[state=active]:bg-zinc-800 data-[state=active]:text-indigo-300 rounded-md rounded-b-none px-6 transition-all"
                   >
@@ -415,7 +390,7 @@ export default function MeetingDocApp() {
               <ScrollArea className="flex-1 bg-zinc-900/20 p-6">
 
                 <TabsContent value="summary" className="m-0 space-y-6 data-[state=inactive]:hidden focus-visible:outline-none focus-visible:ring-0">
-                  {aiResult ? (
+                  {meetingResult ? (
                     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
                       <Card className="border-zinc-800 bg-zinc-900/40 p-6 rounded-2xl">
                         <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
@@ -423,7 +398,7 @@ export default function MeetingDocApp() {
                           Executive Summary
                         </h3>
                         <div className="text-zinc-300 text-sm leading-relaxed space-y-4">
-                          {aiResult.summary.split('\n').map((para, i) => (
+                          {meetingResult.summary.split('\n').map((para, i) => (
                             <p key={i}>{para}</p>
                           ))}
                         </div>
@@ -433,7 +408,7 @@ export default function MeetingDocApp() {
                         <Card className="border-zinc-800 bg-zinc-900/40 p-6 rounded-2xl">
                           <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-widest mb-4">Key Decisions</h3>
                           <ul className="space-y-3">
-                            {aiResult.key_decisions.map((decision, i) => (
+                            {meetingResult.key_decisions.map((decision, i) => (
                               <li key={i} className="flex gap-3 text-sm text-zinc-300">
                                 <span className="h-5 w-5 shrink-0 rounded-full bg-indigo-500/10 text-indigo-400 flex items-center justify-center text-[10px]">•</span>
                                 {decision}
@@ -445,7 +420,7 @@ export default function MeetingDocApp() {
                         <Card className="border-zinc-800 bg-zinc-900/40 p-6 rounded-2xl">
                           <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-widest mb-4">Participants</h3>
                           <div className="flex flex-wrap gap-2">
-                            {aiResult.participants_detected.map((name, i) => (
+                            {meetingResult.participants_detected.map((name, i) => (
                               <Badge key={i} variant="secondary" className="bg-zinc-800 text-zinc-300 border-zinc-700">
                                 {name}
                               </Badge>
@@ -466,7 +441,7 @@ export default function MeetingDocApp() {
                       <Button 
                         variant="outline" 
                         className="border-zinc-800 bg-zinc-900 text-zinc-400" 
-                        onClick={handleProcessTranscript}
+                        onClick={handleProcessMeeting}
                         disabled={!fetchedTranscript || isProcessing}
                       >
                         Generate Summary
@@ -476,9 +451,9 @@ export default function MeetingDocApp() {
                 </TabsContent>
 
                 <TabsContent value="action-items" className="m-0 space-y-4 data-[state=inactive]:hidden focus-visible:outline-none focus-visible:ring-0">
-                  {aiResult && aiResult.action_items.length > 0 ? (
+                  {meetingResult && meetingResult.action_items.length > 0 ? (
                     <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                      {aiResult.action_items.map((item, i) => (
+                      {meetingResult.action_items.map((item, i) => (
                         <Card key={i} className="border-zinc-800 bg-zinc-900/40 p-4 transition-all hover:border-zinc-700">
                           <div className="flex items-start gap-4">
                             <Checkbox className="mt-1 border-zinc-700" />
@@ -525,6 +500,75 @@ export default function MeetingDocApp() {
                   )}
                 </TabsContent>
 
+                <TabsContent value="visual-frames" className="m-0 data-[state=inactive]:hidden focus-visible:outline-none focus-visible:ring-0">
+                  {meetingResult && meetingResult.visual_frames.length > 0 ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                      {meetingResult.visual_frames.map((frame, i) => (
+                        <Card key={i} className="border-zinc-800 bg-zinc-900/40 overflow-hidden hover:border-zinc-700 transition-all">
+                          <CardContent className="p-3">
+                            {frame.thumbnail_data_url ? (
+                              <img
+                                src={frame.thumbnail_data_url}
+                                alt={frame.label}
+                                className="w-full h-24 object-cover rounded-md mb-2"
+                              />
+                            ) : (
+                              <div className="w-full h-24 bg-zinc-800/30 rounded-md mb-2 flex items-center justify-center">
+                                <Bot className="h-6 w-6 text-zinc-700" />
+                              </div>
+                            )}
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="text-xs font-semibold text-zinc-200">
+                                  {frame.label}
+                                </p>
+                                <p className="text-[10px] text-zinc-500 mt-0.5 line-clamp-2">
+                                  {frame.description}
+                                </p>
+                              </div>
+                              <a
+                                href={frame.youtube_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[10px] text-indigo-400 hover:text-indigo-300 shrink-0 mt-0.5 flex items-center gap-1 font-mono"
+                              >
+                                <Clock className="h-2.5 w-2.5" />
+                                {Math.floor(frame.timestamp_seconds / 60)}:
+                                {String(frame.timestamp_seconds % 60).padStart(2, "0")}
+                              </a>
+                            </div>
+                            <div className="flex gap-1 mt-2 flex-wrap">
+                              {frame.has_diagram && (
+                                <Badge className="text-[9px] bg-blue-500/10 text-blue-400 border-blue-500/20 py-0">
+                                  Diagram
+                                </Badge>
+                              )}
+                              {frame.has_code && (
+                                <Badge className="text-[9px] bg-green-500/10 text-green-400 border-green-500/20 py-0">
+                                  Code
+                                </Badge>
+                              )}
+                              <Badge className="text-[9px] bg-zinc-800 text-zinc-400 border-zinc-700 py-0">
+                                {frame.category}
+                              </Badge>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-20 text-center space-y-4 opacity-50">
+                      <div className="h-16 w-16 rounded-full bg-zinc-800 flex items-center justify-center">
+                         <Sparkles className="h-8 w-8 text-zinc-500" />
+                      </div>
+                      <div className="space-y-2">
+                         <h3 className="text-lg font-semibold text-zinc-400">No Visual Frames</h3>
+                         <p className="text-zinc-500 max-w-xs mx-auto text-sm italic">Key visual moments will be captured during processing.</p>
+                      </div>
+                    </div>
+                  )}
+                </TabsContent>
+
                 <TabsContent value="transcript" className="m-0 data-[state=inactive]:hidden focus-visible:outline-none focus-visible:ring-0">
                   <div className="space-y-6">
                     {fetchedTranscript ? (
@@ -560,25 +604,5 @@ export default function MeetingDocApp() {
         </ResizablePanelGroup>
       </main>
     </div>
-  );
-}
-
-function CodeIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <polyline points="16 18 22 12 16 6" />
-      <polyline points="8 6 2 12 8 18" />
-    </svg>
   );
 }

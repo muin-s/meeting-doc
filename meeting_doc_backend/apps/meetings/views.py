@@ -10,7 +10,7 @@ from apps.meetings.serializers import (
     MeetingListSerializer,
     MeetingDetailSerializer,
     ParticipantSerializer,
-    TranscriptSerializer,
+    TranscriptSerializer,   
     ActionItemSerializer,
 )
 from apps.meetings.services.transcript_fetcher import fetch_youtube_transcript
@@ -18,6 +18,9 @@ from apps.meetings.services.ai_processor import process_transcript
 from apps.meetings.services.storyboard_analyzer import detect_significant_frames
 from apps.meetings.services.context_analyzer import analyze_key_moments
 from apps.meetings.services.frame_extractor import extract_hd_frame
+from apps.meetings.services.keyword_scanner import scan_for_key_timestamps
+from apps.meetings.services.frame_grabber import grab_frames_at_timestamps
+from apps.meetings.services.unified_processor import process_meeting
 
 
 class MeetingViewSet(ModelViewSet):
@@ -122,6 +125,47 @@ class MeetingViewSet(ModelViewSet):
             })
 
         return Response({"key_moments": results})
+
+    @action(detail=False, methods=["post"],
+            url_path="process-meeting",
+            permission_classes=[AllowAny])
+    def process_meeting_view(self, request):
+        transcript_text = request.data.get("transcript_text", "")
+        transcript_timestamps = request.data.get("transcript_timestamps", [])
+        video_id = request.data.get("video_id", "")
+
+        if not transcript_text:
+            return Response({"error": "transcript_text is required"}, status=400)
+        if len(transcript_text.strip()) < 50:
+            return Response({"error": "Transcript too short"}, status=400)
+
+        # Step 1: find semantic timestamps
+        key_timestamps = scan_for_key_timestamps(
+            transcript_timestamps,
+            max_frames=5,
+            min_gap_seconds=30
+        )
+        timestamp_seconds_list = [t["timestamp_seconds"] for t in key_timestamps]
+
+        # Step 2: grab sprite thumbnails at those timestamps
+        frames = []
+        if video_id and timestamp_seconds_list:
+            frames = grab_frames_at_timestamps(video_id, timestamp_seconds_list)
+
+            # Merge category info into frames
+            for i, frame in enumerate(frames):
+                if i < len(key_timestamps):
+                    frame["category"] = key_timestamps[i]["category"]
+                    frame["matched_text"] = key_timestamps[i]["matched_text"]
+
+        # Step 3: single Gemini Vision call
+        result = process_meeting(transcript_text, frames, video_id)
+
+        print(f"Key timestamps found: {timestamp_seconds_list}")
+        print(f"Frames grabbed: {len(frames)}")
+        print(f"Frames with thumbnails: {sum(1 for f in frames if f.get('thumbnail_base64'))}")
+
+        return Response(result)
 
     @action(detail=True, methods=["get"], url_path="transcripts")
     def transcripts(self, request, pk=None):

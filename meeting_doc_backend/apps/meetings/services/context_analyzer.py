@@ -5,6 +5,7 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
+
 def analyze_key_moments(transcript_with_timestamps, visual_timestamps):
     """
     Cross reference visual timestamps with surrounding transcript text.

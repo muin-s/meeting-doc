@@ -1,4 +1,4 @@
-import { Meeting, Transcript, ActionItem, Participant, KeyMoment } from "@/types";
+import { Meeting, Transcript, ActionItem, Participant, KeyMoment, MeetingProcessResult } from "@/types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
@@ -84,6 +84,21 @@ export async function analyzeContext(
     body: JSON.stringify({
       video_id: videoId,
       transcript_timestamps: transcriptTimestamps,
+    }),
+  });
+}
+
+export async function processMeeting(
+  transcriptText: string,
+  transcriptTimestamps: Array<{ text: string; start: number; duration: number }>,
+  videoId: string
+): Promise<MeetingProcessResult> {
+  return fetcher("/api/v1/meetings/process-meeting/", {
+    method: "POST",
+    body: JSON.stringify({
+      transcript_text: transcriptText,
+      transcript_timestamps: transcriptTimestamps,
+      video_id: videoId,
     }),
   });
 }

@@ -60,3 +60,27 @@ export interface KeyMoment {
   frame_url: string | null;
   youtube_url: string;
 }
+
+export interface VisualFrame {
+  timestamp_seconds: number;
+  label: string;
+  category: "architecture" | "code" | "task_list" | "data" | "discussion";
+  description: string;
+  has_diagram: boolean;
+  has_code: boolean;
+  thumbnail_data_url: string | null;
+  youtube_url: string;
+}
+
+export interface MeetingProcessResult {
+  summary: string;
+  action_items: Array<{
+    description: string;
+    assignee: string | null;
+    priority: "high" | "medium" | "low";
+    due_date: string | null;
+  }>;
+  key_decisions: string[];
+  participants_detected: string[];
+  visual_frames: VisualFrame[];
+}
