@@ -32,8 +32,8 @@ import {
   Youtube,
   Send,
 } from "lucide-react";
-import { getMeetings, fetchYoutubeTranscript } from "@/lib/api";
-import { Meeting } from "@/types";
+import { getMeetings, fetchYoutubeTranscript, processTranscript, analyzeContext } from "@/lib/api";
+import { Meeting, AIResult, KeyMoment } from "@/types";
 
 export default function MeetingDocApp() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -46,6 +46,24 @@ export default function MeetingDocApp() {
     video_id: string;
     word_count: number;
   } | null>(null);
+  const [aiResult, setAiResult] = useState<AIResult | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const [transcriptTimestamps, setTranscriptTimestamps] = useState<Array<{text: string, start: number, duration: number}>>([]);
+  const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
+  const [isAnalyzingContext, setIsAnalyzingContext] = useState(false);
+
+  async function handleAnalyzeContext(videoId: string, timestamps: Array<{text: string, start: number, duration: number}>) {
+    try {
+      setIsAnalyzingContext(true);
+      const result = await analyzeContext(videoId, timestamps);
+      setKeyMoments(result.key_moments);
+    } catch (err) {
+      console.error("Context analysis failed:", err);
+    } finally {
+      setIsAnalyzingContext(false);
+    }
+  }
 
   useEffect(() => {
     async function loadData() {
@@ -75,11 +93,33 @@ export default function MeetingDocApp() {
         video_id: result.video_id,
         word_count: result.word_count,
       });
+
+      if (result.transcript_timestamps) {
+        setTranscriptTimestamps(result.transcript_timestamps);
+      }
+      if (result.video_id && result.transcript_timestamps) {
+        handleAnalyzeContext(result.video_id, result.transcript_timestamps);
+      }
     } catch (err: any) {
       console.error("Failed to fetch transcript:", err);
       setError(err.message || "Failed to fetch transcript from YouTube.");
     } finally {
       setIsFetchingTranscript(false);
+    }
+  };
+
+  const handleProcessTranscript = async () => {
+    if (!fetchedTranscript) return;
+    try {
+      setIsProcessing(true);
+      setError(null);
+      const result = await processTranscript(fetchedTranscript);
+      setAiResult(result);
+    } catch (err: any) {
+      console.error("Failed to process transcript:", err);
+      setError(err.message || "Failed to process transcript.");
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -184,6 +224,26 @@ export default function MeetingDocApp() {
                     </Button>
                   </div>
                   
+                  {fetchedTranscript && (
+                    <Button
+                      onClick={handleProcessTranscript}
+                      disabled={isProcessing}
+                      className="w-full h-11 bg-violet-600 hover:bg-violet-700 text-white shadow-violet-500/10 shadow-lg mt-2"
+                    >
+                      {isProcessing ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                          Analysing with Gemini...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-4 w-4 mr-2" />
+                          Generate Summary & Action Items
+                        </>
+                      )}
+                    </Button>
+                  )}
+                  
                   {transcriptMetadata && (
                     <div className="flex gap-4 animate-in fade-in slide-in-from-top-2 duration-300">
                       <Badge variant="outline" className="border-zinc-800 bg-zinc-900 text-zinc-400 py-1">
@@ -234,41 +294,89 @@ export default function MeetingDocApp() {
                   <h3 className="text-lg font-semibold tracking-tight text-zinc-100">Detected Context (AI)</h3>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 opacity-50">
-                  <Card className="border-zinc-800 bg-zinc-900/40 cursor-not-allowed">
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                        <span className="p-1.5 rounded-md bg-blue-500/10 text-blue-400"><FileText className="w-3.5 h-3.5" /></span>
-                        Architecture Diagram
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="h-20 w-full bg-zinc-800/30 rounded-md flex items-center justify-center">
-                        <Bot className="h-6 w-6 text-zinc-700" />
-                      </div>
-                      <div className="mt-2 flex items-center justify-between text-[10px] text-zinc-600">
-                        <span>Analysis Pending</span>
-                      </div>
-                    </CardContent>
-                  </Card>
+                {isAnalyzingContext && keyMoments.length === 0 && (
+                  <div className="flex items-center gap-2 text-zinc-500 text-sm mb-4">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Analyzing visual context...</span>
+                  </div>
+                )}
 
-                  <Card className="border-zinc-800 bg-zinc-900/40 cursor-not-allowed">
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                        <span className="p-1.5 rounded-md bg-green-500/10 text-green-400"><CodeIcon className="w-3.5 h-3.5" /></span>
-                        Code Walkthrough
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="h-20 w-full bg-zinc-800/30 rounded-md flex items-center justify-center font-mono text-[8px] text-zinc-700">
-                        PROCESSING...
-                      </div>
-                      <div className="mt-2 flex items-center justify-between text-[10px] text-zinc-600">
-                        <span>Analysis Pending</span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
+                {keyMoments.length > 0 ? (
+                  <div className="grid grid-cols-2 gap-4">
+                    {keyMoments.map((moment) => (
+                      <Card key={moment.timestamp_seconds} className="border-zinc-800 bg-zinc-900/40">
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                            <span className="p-1.5 rounded-md bg-indigo-500/10 text-indigo-400">
+                              <Sparkles className="w-3.5 h-3.5" />
+                            </span>
+                            {moment.label}
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          {moment.frame_url ? (
+                            <img
+                              src={`http://127.0.0.1:8000${moment.frame_url}`}
+                              alt={moment.label}
+                              className="h-20 w-full object-cover rounded-md"
+                            />
+                          ) : (
+                            <div className="h-20 w-full bg-zinc-800/30 rounded-md flex items-center justify-center">
+                              <Bot className="h-6 w-6 text-zinc-700" />
+                            </div>
+                          )}
+                          <div className="mt-2 flex items-center justify-between text-[10px] text-zinc-500">
+                            <span className="truncate mr-2 text-left">{moment.description}</span>
+                            <a
+                              href={moment.youtube_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-indigo-400 hover:text-indigo-300 shrink-0"
+                            >
+                              {Math.floor(moment.timestamp_seconds / 60)}:
+                              {String(moment.timestamp_seconds % 60).padStart(2, "0")}
+                            </a>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-4 opacity-50">
+                    <Card className="border-zinc-800 bg-zinc-900/40 cursor-not-allowed">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                          <span className="p-1.5 rounded-md bg-blue-500/10 text-blue-400">
+                            <FileText className="w-3.5 h-3.5" />
+                          </span>
+                          Architecture Diagram
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="h-20 w-full bg-zinc-800/30 rounded-md flex items-center justify-center">
+                          <Bot className="h-6 w-6 text-zinc-700" />
+                        </div>
+                        <div className="mt-2 text-[10px] text-zinc-600">Analysis Pending</div>
+                      </CardContent>
+                    </Card>
+                    <Card className="border-zinc-800 bg-zinc-900/40 cursor-not-allowed">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                          <span className="p-1.5 rounded-md bg-green-500/10 text-green-400">
+                            <CodeIcon className="w-3.5 h-3.5" />
+                          </span>
+                          Code Walkthrough
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="h-20 w-full bg-zinc-800/30 rounded-md flex items-center justify-center font-mono text-[8px] text-zinc-700">
+                          PROCESSING...
+                        </div>
+                        <div className="mt-2 text-[10px] text-zinc-600">Analysis Pending</div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                )}
               </div>
 
             </ScrollArea>
@@ -307,30 +415,114 @@ export default function MeetingDocApp() {
               <ScrollArea className="flex-1 bg-zinc-900/20 p-6">
 
                 <TabsContent value="summary" className="m-0 space-y-6 data-[state=inactive]:hidden focus-visible:outline-none focus-visible:ring-0">
-                  <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
-                    <div className="h-16 w-16 rounded-full bg-indigo-500/10 flex items-center justify-center">
-                       <Bot className="h-8 w-8 text-indigo-400" />
+                  {aiResult ? (
+                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                      <Card className="border-zinc-800 bg-zinc-900/40 p-6 rounded-2xl">
+                        <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                          <Bot className="h-5 w-5 text-indigo-400" />
+                          Executive Summary
+                        </h3>
+                        <div className="text-zinc-300 text-sm leading-relaxed space-y-4">
+                          {aiResult.summary.split('\n').map((para, i) => (
+                            <p key={i}>{para}</p>
+                          ))}
+                        </div>
+                      </Card>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <Card className="border-zinc-800 bg-zinc-900/40 p-6 rounded-2xl">
+                          <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-widest mb-4">Key Decisions</h3>
+                          <ul className="space-y-3">
+                            {aiResult.key_decisions.map((decision, i) => (
+                              <li key={i} className="flex gap-3 text-sm text-zinc-300">
+                                <span className="h-5 w-5 shrink-0 rounded-full bg-indigo-500/10 text-indigo-400 flex items-center justify-center text-[10px]">•</span>
+                                {decision}
+                              </li>
+                            ))}
+                          </ul>
+                        </Card>
+
+                        <Card className="border-zinc-800 bg-zinc-900/40 p-6 rounded-2xl">
+                          <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-widest mb-4">Participants</h3>
+                          <div className="flex flex-wrap gap-2">
+                            {aiResult.participants_detected.map((name, i) => (
+                              <Badge key={i} variant="secondary" className="bg-zinc-800 text-zinc-300 border-zinc-700">
+                                {name}
+                              </Badge>
+                            ))}
+                          </div>
+                        </Card>
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                       <h3 className="text-xl font-bold text-white">Analysis Required</h3>
-                       <p className="text-zinc-400 max-w-xs mx-auto text-sm">Fetch a transcript first, then AI will generate a structured summary of the meeting.</p>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
+                      <div className="h-16 w-16 rounded-full bg-indigo-500/10 flex items-center justify-center">
+                         <Bot className="h-8 w-8 text-indigo-400" />
+                      </div>
+                      <div className="space-y-2">
+                         <h3 className="text-xl font-bold text-white">Analysis Required</h3>
+                         <p className="text-zinc-400 max-w-xs mx-auto text-sm">Fetch a transcript first, then AI will generate a structured summary of the meeting.</p>
+                      </div>
+                      <Button 
+                        variant="outline" 
+                        className="border-zinc-800 bg-zinc-900 text-zinc-400" 
+                        onClick={handleProcessTranscript}
+                        disabled={!fetchedTranscript || isProcessing}
+                      >
+                        Generate Summary
+                      </Button>
                     </div>
-                    <Button variant="outline" className="border-zinc-800 bg-zinc-900 text-zinc-400" disabled>
-                      Generate Summary
-                    </Button>
-                  </div>
+                  )}
                 </TabsContent>
 
                 <TabsContent value="action-items" className="m-0 space-y-4 data-[state=inactive]:hidden focus-visible:outline-none focus-visible:ring-0">
-                   <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
-                    <div className="h-16 w-16 rounded-full bg-indigo-500/10 flex items-center justify-center">
-                       <Checkbox className="h-6 w-6 border-indigo-400 text-indigo-400" disabled />
+                  {aiResult && aiResult.action_items.length > 0 ? (
+                    <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                      {aiResult.action_items.map((item, i) => (
+                        <Card key={i} className="border-zinc-800 bg-zinc-900/40 p-4 transition-all hover:border-zinc-700">
+                          <div className="flex items-start gap-4">
+                            <Checkbox className="mt-1 border-zinc-700" />
+                            <div className="flex-1 space-y-2">
+                              <p className="text-sm font-medium text-zinc-200">{item.description}</p>
+                              <div className="flex flex-wrap items-center gap-3">
+                                <Badge variant="outline" className="text-[10px] bg-zinc-800/50 text-zinc-400 border-zinc-700">
+                                  <User className="h-3 w-3 mr-1" />
+                                  {item.assignee || "Unassigned"}
+                                </Badge>
+                                
+                                <Badge 
+                                  className={`text-[10px] ${
+                                    item.priority === 'high' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' :
+                                    item.priority === 'medium' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                                    'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                  }`}
+                                >
+                                  {item.priority.toUpperCase()}
+                                </Badge>
+
+                                {item.due_date && (
+                                  <span className="text-[10px] text-zinc-500 flex items-center gap-1">
+                                    <Clock className="h-3 w-3" />
+                                    {item.due_date}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </Card>
+                      ))}
                     </div>
-                    <div className="space-y-2">
-                       <h3 className="text-xl font-bold text-white">No Action Items</h3>
-                       <p className="text-zinc-400 max-w-xs mx-auto text-sm">Action items will be automatically extracted during the AI processing phase.</p>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
+                      <div className="h-16 w-16 rounded-full bg-indigo-500/10 flex items-center justify-center">
+                         <Checkbox className="h-6 w-6 border-indigo-400 text-indigo-400" disabled />
+                      </div>
+                      <div className="space-y-2">
+                         <h3 className="text-xl font-bold text-white">No Action Items</h3>
+                         <p className="text-zinc-400 max-w-xs mx-auto text-sm">Action items will be automatically extracted during the AI processing phase.</p>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </TabsContent>
 
                 <TabsContent value="transcript" className="m-0 data-[state=inactive]:hidden focus-visible:outline-none focus-visible:ring-0">

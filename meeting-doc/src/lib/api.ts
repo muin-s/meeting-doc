@@ -1,4 +1,4 @@
-import { Meeting, Transcript, ActionItem, Participant } from "@/types";
+import { Meeting, Transcript, ActionItem, Participant, KeyMoment } from "@/types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
@@ -50,13 +50,40 @@ export async function fetchYoutubeTranscript(url: string): Promise<{
   transcript_text: string;
   video_id: string;
   word_count: number;
+  transcript_timestamps: Array<{ text: string; start: number; duration: number }>;
 }> {
-  return fetcher<{
-    transcript_text: string;
-    video_id: string;
-    word_count: number;
-  }>("/api/v1/meetings/fetch-transcript/", {
+  return fetcher("/api/v1/meetings/fetch-transcript/", {
     method: "POST",
     body: JSON.stringify({ youtube_url: url }),
+  });
+}
+
+export async function processTranscript(transcriptText: string): Promise<{
+  summary: string;
+  action_items: Array<{
+    description: string;
+    assignee: string | null;
+    priority: "high" | "medium" | "low";
+    due_date: string | null;
+  }>;
+  key_decisions: string[];
+  participants_detected: string[];
+}> {
+  return fetcher("/api/v1/meetings/process-transcript/", {
+    method: "POST",
+    body: JSON.stringify({ transcript_text: transcriptText }),
+  });
+}
+
+export async function analyzeContext(
+  videoId: string,
+  transcriptTimestamps: Array<{ text: string; start: number; duration: number }>
+): Promise<{ key_moments: KeyMoment[] }> {
+  return fetcher("/api/v1/meetings/analyze-context/", {
+    method: "POST",
+    body: JSON.stringify({
+      video_id: videoId,
+      transcript_timestamps: transcriptTimestamps,
+    }),
   });
 }

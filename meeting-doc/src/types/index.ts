@@ -39,3 +39,24 @@ export interface Participant {
   email: string;
   role: string;
 }
+
+export interface AIResult {
+  summary: string;
+  action_items: Array<{
+    description: string;
+    assignee: string | null;
+    priority: "high" | "medium" | "low";
+    due_date: string | null;
+  }>;
+  key_decisions: string[];
+  participants_detected: string[];
+}
+
+export interface KeyMoment {
+  timestamp_seconds: number;
+  label: string;
+  description: string;
+  confidence: "high" | "medium" | "low";
+  frame_url: string | null;
+  youtube_url: string;
+}

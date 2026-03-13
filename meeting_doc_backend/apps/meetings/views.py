@@ -14,6 +14,10 @@ from apps.meetings.serializers import (
     ActionItemSerializer,
 )
 from apps.meetings.services.transcript_fetcher import fetch_youtube_transcript
+from apps.meetings.services.ai_processor import process_transcript
+from apps.meetings.services.storyboard_analyzer import detect_significant_frames
+from apps.meetings.services.context_analyzer import analyze_key_moments
+from apps.meetings.services.frame_extractor import extract_hd_frame
 
 
 class MeetingViewSet(ModelViewSet):
@@ -48,6 +52,76 @@ class MeetingViewSet(ModelViewSet):
             return Response({"error": result["error"]}, status=400)
 
         return Response(result)
+
+    @action(detail=False, methods=["post"],
+            url_path="process-transcript",
+            permission_classes=[AllowAny])
+    def process_transcript(self, request):
+        transcript_text = request.data.get("transcript_text")
+        if not transcript_text:
+            return Response({"error": "transcript_text is required"}, status=400)
+        if len(transcript_text.strip()) < 50:
+            return Response({"error": "Transcript too short to process"}, status=400)
+
+        result = process_transcript(transcript_text)
+
+        if "error" in result and "action_items" not in result:
+            return Response(result, status=500)
+
+        return Response(result)
+
+    @action(detail=False, methods=["post"],
+            url_path="analyze-context",
+            permission_classes=[AllowAny])
+    def analyze_context(self, request):
+        import os
+        video_id = request.data.get("video_id")
+        transcript_with_timestamps = request.data.get("transcript_timestamps", [])
+
+        if not video_id:
+            return Response({"error": "video_id is required"}, status=400)
+
+        # Step 1+2: detect visual frame changes from storyboard
+        visual_timestamps = detect_significant_frames(video_id)
+
+        if not visual_timestamps:
+            return Response({"error": "Could not analyze storyboard"}, status=400)
+
+        # Create mapping of timestamp -> thumbnail for fallback
+        thumbnail_map = { vt["estimated_timestamp_seconds"]: vt.get("thumbnail") for vt in visual_timestamps }
+
+        # Step 3: cross reference with transcript via Gemini
+        labeled_moments = analyze_key_moments(
+            transcript_with_timestamps,
+            visual_timestamps
+        )
+
+        # Step 4: fetch HD frame for each labeled moment
+        # Store frames in media/frames/{video_id}/
+        output_dir = os.path.join("media", "frames", video_id)
+        os.makedirs(output_dir, exist_ok=True)
+
+        results = []
+        for moment in labeled_moments:
+            ts = moment["timestamp_seconds"]
+            fallback = thumbnail_map.get(ts)
+            
+            frame_path = extract_hd_frame(
+                video_id,
+                ts,
+                output_dir,
+                fallback_image=fallback
+            )
+            results.append({
+                "timestamp_seconds": ts,
+                "label": moment["label"],
+                "description": moment["description"],
+                "confidence": moment["confidence"],
+                "frame_url": f"/media/frames/{video_id}/{os.path.basename(frame_path)}" if frame_path else None,
+                "youtube_url": f"https://www.youtube.com/watch?v={video_id}&t={ts}"
+            })
+
+        return Response({"key_moments": results})
 
     @action(detail=True, methods=["get"], url_path="transcripts")
     def transcripts(self, request, pk=None):

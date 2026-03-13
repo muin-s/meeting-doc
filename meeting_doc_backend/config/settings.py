@@ -23,6 +23,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-_@m04kj_q-qm4fa3+jo)hej9z!w$+%(8c$#m@(7w^mx6_x1o=m'
 
+GEMINI_API_KEY = config("GEMINI_API_KEY", default="")
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
@@ -134,6 +136,9 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 
 # ---------------------------------------------------------------------------
