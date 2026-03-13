@@ -16,14 +16,14 @@ class TranscriptInline(admin.TabularInline):
 class ActionItemInline(admin.TabularInline):
     model = ActionItem
     extra = 0
-    fields = ["description", "priority", "status", "assignee", "due_date"]
+    fields = ["description", "assignee_name", "priority", "status", "assignee", "due_date"]
 
 
 @admin.register(Meeting)
 class MeetingAdmin(admin.ModelAdmin):
-    list_display = ["title", "date", "duration_minutes", "is_active", "created_at"]
-    list_filter = ["is_active", "date"]
-    search_fields = ["title", "description"]
+    list_display = ["title", "video_id", "is_processed", "is_active", "created_at"]
+    list_filter = ["is_active", "is_processed", "created_at"]
+    search_fields = ["title", "video_id", "summary"]
     inlines = [ParticipantInline, TranscriptInline, ActionItemInline]
 
 
@@ -43,6 +43,6 @@ class TranscriptAdmin(admin.ModelAdmin):
 
 @admin.register(ActionItem)
 class ActionItemAdmin(admin.ModelAdmin):
-    list_display = ["description", "priority", "status", "assignee", "meeting", "due_date"]
+    list_display = ["description", "assignee_name", "priority", "status", "assignee", "meeting", "due_date"]
     list_filter = ["priority", "status"]
-    search_fields = ["description", "notes"]
+    search_fields = ["description", "notes", "assignee_name"]

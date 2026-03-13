@@ -1,36 +1,39 @@
 from django.db import models
-from apps.core.models import UUIDModel
+from apps.core.models import UUIDModel, TimeStampedModel
 
 
-class Meeting(UUIDModel):
-    """
-    Represents a recorded meeting session.
-    Maps to the frontend's meeting header: title, date, duration, presenter, video.
-    """
-
-    title = models.CharField(max_length=300)
-    description = models.TextField(blank=True, default="")
-    date = models.DateTimeField()
-    duration_minutes = models.PositiveIntegerField(
-        help_text="Duration of the meeting in minutes"
+class Meeting(UUIDModel, TimeStampedModel):
+    video_id = models.CharField(max_length=30, db_index=True)
+    session_key = models.CharField(
+        max_length=40,
+        db_index=True,
+        default="",
+        blank=True
     )
-    video_url = models.URLField(blank=True, default="")
-    thumbnail_url = models.URLField(blank=True, default="")
+    title = models.CharField(max_length=500, blank=True)
+    youtube_url = models.URLField(blank=True)
+    transcript_text = models.TextField(blank=True)
+    summary = models.TextField(blank=True)
+    key_decisions = models.JSONField(default=list)
+    participants_detected = models.JSONField(default=list)
+    visual_frames = models.JSONField(default=list)
+    word_count = models.IntegerField(default=0)
+    is_processed = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
     class Meta:
+        unique_together = ["video_id", "session_key"]
+        ordering = ["-created_at"]
         verbose_name = "Meeting"
         verbose_name_plural = "Meetings"
-        ordering = ["-date"]
 
     def __str__(self):
-        return self.title
+        return self.title or self.video_id
 
 
-class Participant(UUIDModel):
+class Participant(UUIDModel, TimeStampedModel):
     """
     Represents a participant in a meeting.
-    Maps to the frontend's avatars, speaker names, roles.
     """
 
     class Role(models.TextChoices):
@@ -49,7 +52,6 @@ class Participant(UUIDModel):
         max_length=5,
         blank=True,
         default="",
-        help_text="Display initials, e.g. 'SJ' for Sarah Jenkins",
     )
     avatar_url = models.URLField(blank=True, default="")
     role = models.CharField(
@@ -68,17 +70,15 @@ class Participant(UUIDModel):
         return f"{self.name} ({self.get_role_display()})"
 
     def save(self, *args, **kwargs):
-        # Auto-generate initials from name if not provided
         if not self.initials and self.name:
             parts = self.name.strip().split()
             self.initials = "".join(p[0].upper() for p in parts[:2])
         super().save(*args, **kwargs)
 
 
-class Transcript(UUIDModel):
+class Transcript(UUIDModel, TimeStampedModel):
     """
-    Represents a single transcript entry (one speaker turn) within a meeting.
-    Maps to the frontend's Raw Transcript tab: speaker, timestamp, text.
+    Represents a single transcript entry within a meeting.
     """
 
     meeting = models.ForeignKey(
@@ -95,12 +95,10 @@ class Transcript(UUIDModel):
     )
     timestamp = models.CharField(
         max_length=10,
-        help_text="Timestamp in the video, e.g. '12:04'",
     )
     text = models.TextField()
     order = models.PositiveIntegerField(
         default=0,
-        help_text="Order of this entry in the transcript",
     )
 
     class Meta:
@@ -113,10 +111,9 @@ class Transcript(UUIDModel):
         return f"[{self.timestamp}] {speaker_name}: {self.text[:50]}"
 
 
-class ActionItem(UUIDModel):
+class ActionItem(UUIDModel, TimeStampedModel):
     """
     Represents an action item extracted from a meeting.
-    Maps to the frontend's Action Items tab: description, priority, status, assignee.
     """
 
     class Priority(models.TextChoices):
@@ -135,10 +132,10 @@ class ActionItem(UUIDModel):
         related_name="action_items",
     )
     description = models.TextField()
+    assignee_name = models.CharField(max_length=255, blank=True, default="")
     notes = models.TextField(
         blank=True,
         default="",
-        help_text="Additional context, e.g. 'Mentioned at 14:20 during infrastructure discussion'",
     )
     priority = models.CharField(
         max_length=10,
@@ -157,12 +154,11 @@ class ActionItem(UUIDModel):
         blank=True,
         related_name="assigned_action_items",
     )
-    due_date = models.DateField(null=True, blank=True)
+    due_date = models.CharField(max_length=100, null=True, blank=True)
     timestamp_reference = models.CharField(
         max_length=10,
         blank=True,
         default="",
-        help_text="Timestamp in the video where this action item was mentioned",
     )
 
     class Meta:

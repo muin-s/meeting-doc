@@ -54,15 +54,9 @@ class ActionItemSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(
         source="get_status_display", read_only=True
     )
-    assignee_name = serializers.CharField(
-        source="assignee.name", read_only=True, default=None
-    )
-    assignee_initials = serializers.CharField(
-        source="assignee.initials", read_only=True, default=""
-    )
-    assignee_avatar_url = serializers.CharField(
-        source="assignee.avatar_url", read_only=True, default=""
-    )
+    
+    # Use assignee_name from model, or fallback to assignee.name if linked
+    display_assignee = serializers.SerializerMethodField()
 
     class Meta:
         model = ActionItem
@@ -70,15 +64,14 @@ class ActionItemSerializer(serializers.ModelSerializer):
             "id",
             "meeting",
             "description",
+            "assignee_name",
             "notes",
             "priority",
             "priority_display",
             "status",
             "status_display",
             "assignee",
-            "assignee_name",
-            "assignee_initials",
-            "assignee_avatar_url",
+            "display_assignee",
             "due_date",
             "timestamp_reference",
             "created_at",
@@ -86,38 +79,37 @@ class ActionItemSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
+    def get_display_assignee(self, obj):
+        if obj.assignee:
+            return obj.assignee.name
+        return obj.assignee_name or "Unassigned"
 
-class MeetingListSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for list views."""
 
-    participant_count = serializers.IntegerField(
-        source="participants.count", read_only=True
-    )
-    action_item_count = serializers.IntegerField(
-        source="action_items.count", read_only=True
-    )
-
+class MeetingSerializer(serializers.ModelSerializer):
+    """Full serializer including analysis fields."""
     class Meta:
         model = Meeting
         fields = [
-            "id",
-            "title",
-            "description",
-            "date",
-            "duration_minutes",
-            "thumbnail_url",
-            "is_active",
-            "participant_count",
-            "action_item_count",
-            "created_at",
-            "updated_at",
+            "id", "video_id", "title", "youtube_url", "transcript_text",
+            "summary", "key_decisions", "participants_detected", "visual_frames",
+            "word_count", "is_processed", "created_at", "updated_at"
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class MeetingListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for list views."""
+    class Meta:
+        model = Meeting
+        fields = [
+            "id", "video_id", "title", "youtube_url", "summary",
+            "is_processed", "word_count", "created_at"
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
 class MeetingDetailSerializer(serializers.ModelSerializer):
-    """Full serializer with nested participants, transcripts, and action items."""
-
+    """Full detail with related objects."""
     participants = ParticipantSerializer(many=True, read_only=True)
     transcripts = TranscriptSerializer(many=True, read_only=True)
     action_items = ActionItemSerializer(many=True, read_only=True)
@@ -125,18 +117,9 @@ class MeetingDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Meeting
         fields = [
-            "id",
-            "title",
-            "description",
-            "date",
-            "duration_minutes",
-            "video_url",
-            "thumbnail_url",
-            "is_active",
-            "participants",
-            "transcripts",
-            "action_items",
-            "created_at",
-            "updated_at",
+            "id", "video_id", "title", "youtube_url", "transcript_text",
+            "summary", "key_decisions", "participants_detected", "visual_frames",
+            "word_count", "is_processed", "participants", "transcripts", 
+            "action_items", "created_at", "updated_at"
         ]
         read_only_fields = ["id", "created_at", "updated_at"]

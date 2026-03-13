@@ -23,6 +23,12 @@ from apps.meetings.services.frame_grabber import grab_frames_at_timestamps
 from apps.meetings.services.unified_processor import process_meeting
 
 
+def get_or_create_session_key(request):
+    if not request.session.session_key:
+        request.session.create()
+    return request.session.session_key
+
+
 class MeetingViewSet(ModelViewSet):
     """
     API endpoint for meetings.
@@ -31,12 +37,12 @@ class MeetingViewSet(ModelViewSet):
     - POST/PUT/PATCH/DELETE      → standard CRUD
     """
 
-    queryset = Meeting.objects.all()
-    permission_classes = [AllowAny]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    search_fields = ["title", "description"]
-    ordering_fields = ["date", "created_at", "duration_minutes"]
-    ordering = ["-date"]
+    ordering_fields = ["created_at"]
+    ordering = ["-created_at"]
+
+    def get_queryset(self):
+        session_key = get_or_create_session_key(self.request)
+        return Meeting.objects.filter(session_key=session_key)
 
     def get_serializer_class(self):
         if self.action == "retrieve":
@@ -46,14 +52,62 @@ class MeetingViewSet(ModelViewSet):
     @action(detail=False, methods=["post"], url_path="fetch-transcript", permission_classes=[AllowAny])
     def fetch_transcript(self, request):
         """POST /api/v1/meetings/fetch-transcript/ — fetch a transcript for a given YouTube URL."""
+        session_key = get_or_create_session_key(request)
         youtube_url = request.data.get("youtube_url")
         if not youtube_url:
             return Response({"error": "youtube_url is required"}, status=400)
 
+        # 1. Extract video_id from youtube_url
+        import re
+        video_id_match = re.search(r'(?:v=|\/|be\/)([a-zA-Z0-9_-]{11})', youtube_url)
+        video_id = video_id_match.group(1) if video_id_match else None
+        
+        if not video_id:
+            return Response({"error": "Invalid YouTube URL"}, status=400)
+
+        # 2. Check if Meeting with this video_id exists AND is_processed=True
+        meeting = Meeting.objects.filter(
+            video_id=video_id,
+            session_key=session_key,
+            is_processed=True
+        ).first()
+        
+        if meeting:
+            # 3. If YES: return cached result immediately
+            action_items = ActionItemSerializer(meeting.action_items.all(), many=True).data
+            return Response({
+                "transcript_text": meeting.transcript_text,
+                "video_id": meeting.video_id,
+                "word_count": meeting.word_count,
+                "transcript_timestamps": [], # Not needed if cached
+                "cached": True,
+                "cached_result": {
+                    "summary": meeting.summary,
+                    "action_items": action_items,
+                    "key_decisions": meeting.key_decisions,
+                    "participants_detected": meeting.participants_detected,
+                    "visual_frames": meeting.visual_frames
+                }
+            })
+
+        # 4. If NO: run normal transcript fetch
         result = fetch_youtube_transcript(youtube_url)
         if "error" in result:
             return Response({"error": result["error"]}, status=400)
 
+        # Create or update Meeting record
+        Meeting.objects.update_or_create(
+            video_id=video_id,
+            session_key=session_key,
+            defaults={
+                "youtube_url": youtube_url,
+                "transcript_text": result.get("transcript_text", ""),
+                "word_count": result.get("word_count", 0),
+                "is_processed": False
+            }
+        )
+
+        result["cached"] = False
         return Response(result)
 
     @action(detail=False, methods=["post"],
@@ -161,11 +215,48 @@ class MeetingViewSet(ModelViewSet):
         # Step 3: single Gemini Vision call
         result = process_meeting(transcript_text, frames, video_id)
 
+        # Save to DB
+        session_key = get_or_create_session_key(request)
+        try:
+            meeting = Meeting.objects.get(video_id=video_id, session_key=session_key)
+            meeting.summary = result.get("summary", "")
+            meeting.key_decisions = result.get("key_decisions", [])
+            meeting.participants_detected = result.get("participants_detected", [])
+            meeting.visual_frames = result.get("visual_frames", [])
+            meeting.is_processed = True
+            meeting.save()
+
+            # Also save action items
+            ActionItem.objects.filter(meeting=meeting).delete()
+            for item in result.get("action_items", []):
+                ActionItem.objects.create(
+                    meeting=meeting,
+                    description=item["description"],
+                    assignee_name=item.get("assignee") or "",
+                    priority=item.get("priority", "medium"),
+                    due_date=item.get("due_date")
+                )
+        except Meeting.DoesNotExist:
+            pass
+
         print(f"Key timestamps found: {timestamp_seconds_list}")
         print(f"Frames grabbed: {len(frames)}")
         print(f"Frames with thumbnails: {sum(1 for f in frames if f.get('thumbnail_base64'))}")
 
         return Response(result)
+
+    @action(detail=False, methods=["get"],
+            url_path="history",
+            permission_classes=[AllowAny])
+    def history(self, request):
+        """GET /api/v1/meetings/history/ — returns last 20 processed meetings."""
+        session_key = get_or_create_session_key(request)
+        queryset = Meeting.objects.filter(
+            session_key=session_key, 
+            is_processed=True
+        ).order_by('-created_at')[:20]
+        serializer = MeetingListSerializer(queryset, many=True)
+        return Response(serializer.data)
 
     @action(detail=True, methods=["get"], url_path="transcripts")
     def transcripts(self, request, pk=None):

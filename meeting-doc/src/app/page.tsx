@@ -36,6 +36,9 @@ import {
 } from "lucide-react";
 import { getMeetings, fetchYoutubeTranscript, processMeeting } from "@/lib/api";
 import { Meeting, MeetingProcessResult } from "@/types";
+import { cn } from "@/lib/utils";
+
+const BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 export default function MeetingDocApp() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -54,12 +57,23 @@ export default function MeetingDocApp() {
   const [meetingResult, setMeetingResult] = useState<MeetingProcessResult | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // Interaction states
+  const [activeTab, setActiveTab] = useState("transcript");
+  const [glowFrameIndex, setGlowFrameIndex] = useState<number | null>(null);
+  const [pastMeetings, setPastMeetings] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+
   useEffect(() => {
     async function loadData() {
       try {
         setIsLoading(true);
+        // Load initial meetings list (if needed by other UI parts)
         const meetingList = await getMeetings();
         setMeetings(meetingList);
+
+        // Step 7: Load past meetings on mount
+        const history = await fetch(`${BASE}/api/v1/meetings/history/`).then(r => r.json());
+        setPastMeetings(Array.isArray(history) ? history : []);
       } catch (err) {
         console.error("Failed to fetch meetings:", err);
         setError("Unable to connect to the backend. Please ensure the Django server is running at http://127.0.0.1:8000");
@@ -71,13 +85,20 @@ export default function MeetingDocApp() {
     loadData();
   }, []);
 
+  function openFrameInTab(frameIndex: number) {
+    setActiveTab("visual-frames");
+    setGlowFrameIndex(frameIndex);
+    setTimeout(() => setGlowFrameIndex(null), 1000);
+  }
+
   const handleFetchTranscript = async () => {
     if (!youtubeUrl) return;
     try {
       setIsFetchingTranscript(true);
       setError(null);
       setMeetingResult(null); // Clear previous results
-      const result = await fetchYoutubeTranscript(youtubeUrl);
+      const result = await fetchYoutubeTranscript(youtubeUrl) as any;
+      
       setFetchedTranscript(result.transcript_text);
       setTranscriptMetadata({
         video_id: result.video_id,
@@ -86,6 +107,12 @@ export default function MeetingDocApp() {
 
       if (result.transcript_timestamps) {
         setTranscriptTimestamps(result.transcript_timestamps);
+      }
+
+      // Step 7: Check if response has cached=true
+      if (result.cached && result.cached_result) {
+        setMeetingResult(result.cached_result);
+        setActiveTab("summary");
       }
     } catch (err: any) {
       console.error("Failed to fetch transcript:", err);
@@ -106,6 +133,11 @@ export default function MeetingDocApp() {
         transcriptMetadata.video_id
       );
       setMeetingResult(result);
+      setActiveTab("summary"); // Switch to summary on success
+
+      // Refresh history
+      const history = await fetch(`${BASE}/api/v1/meetings/history/`).then(r => r.json());
+      setPastMeetings(Array.isArray(history) ? history : []);
     } catch (err: any) {
       console.error("Failed to process meeting:", err);
       setError(err.message || "Failed to process meeting");
@@ -126,8 +158,17 @@ export default function MeetingDocApp() {
   }
 
   // Find frames for Detected Context section
-  const architectureFrame = meetingResult?.visual_frames?.find(f => f.has_diagram);
-  const codeFrame = meetingResult?.visual_frames?.find(f => f.has_code);
+  const architectureFrameIndex = meetingResult?.visual_frames?.findIndex(f => f.has_diagram);
+  const codeFrameIndex = meetingResult?.visual_frames?.findIndex(f => f.has_code);
+  
+  const architectureFrame = architectureFrameIndex !== undefined && architectureFrameIndex >= 0 ? meetingResult?.visual_frames[architectureFrameIndex] : null;
+  const codeFrame = codeFrameIndex !== undefined && codeFrameIndex >= 0 ? meetingResult?.visual_frames[codeFrameIndex] : null;
+
+  // Search filtering
+  const filteredPastMeetings = pastMeetings.filter(m => 
+    (m.title || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (m.video_id || "").toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   return (
     <div className="flex h-screen flex-col bg-zinc-950 font-sans text-zinc-50 overflow-hidden">
@@ -148,9 +189,32 @@ export default function MeetingDocApp() {
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
             <Input
               type="text"
-              placeholder="Search in transcript, summaries, and action items..."
+              placeholder="Search history by title or video ID..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               className="h-10 w-full rounded-full border-zinc-800 bg-zinc-900/50 pl-10 text-sm text-zinc-200 placeholder:text-zinc-500 focus-visible:ring-indigo-500/50"
             />
+            {searchQuery && filteredPastMeetings.length > 0 && (
+              <div className="absolute top-full left-0 w-full mt-2 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl z-50 max-h-60 overflow-y-auto">
+                {filteredPastMeetings.map(m => (
+                  <div 
+                    key={m.id}
+                    className="p-3 hover:bg-zinc-800 cursor-pointer flex items-center gap-2 border-b border-zinc-800/50 last:border-0"
+                    onClick={() => {
+                      setYoutubeUrl(m.youtube_url);
+                      setSearchQuery("");
+                    }}
+                  >
+                    <Youtube className="h-4 w-4 text-red-500" />
+                    <div className="flex-1 truncate">
+                      <p className="text-xs font-medium text-zinc-200 truncate">{m.title || m.video_id}</p>
+                      <p className="text-[10px] text-zinc-500">{m.video_id}</p>
+                    </div>
+                    {m.is_processed && <Badge className="text-[9px] bg-green-500/10 text-green-400 py-0">Cached</Badge>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -173,9 +237,10 @@ export default function MeetingDocApp() {
 
           <Separator orientation="vertical" className="h-8 bg-zinc-800 mx-2" />
 
-          <Avatar className="h-9 w-9 border border-zinc-800 cursor-pointer">
-            <AvatarImage src="https://github.com/shadcn.png" alt="@user" />
-            <AvatarFallback className="bg-zinc-800">U</AvatarFallback>
+          <Avatar className="h-9 w-9 border border-zinc-800">
+            <AvatarFallback className="bg-zinc-800 text-zinc-400 text-xs">
+              You
+            </AvatarFallback>
           </Avatar>
         </div>
       </header>
@@ -189,7 +254,7 @@ export default function MeetingDocApp() {
             <ScrollArea className="flex-1 p-6">
               
               {/* YouTube Input Section */}
-              <Card className="mb-8 border-zinc-800 bg-zinc-900/50 shadow-lg">
+              <Card className="mb-6 border-zinc-800 bg-zinc-900/50 shadow-lg">
                 <CardHeader className="pb-4">
                   <CardTitle className="text-lg font-semibold text-white flex items-center gap-2">
                     <Youtube className="h-5 w-5 text-red-500" />
@@ -219,7 +284,7 @@ export default function MeetingDocApp() {
                     </Button>
                   </div>
                   
-                  {fetchedTranscript && (
+                  {fetchedTranscript && !meetingResult?.summary && (
                     <Button
                       onClick={handleProcessMeeting}
                       disabled={isProcessing}
@@ -256,11 +321,46 @@ export default function MeetingDocApp() {
                       <p>{error}</p>
                     </div>
                   )}
+
+                  {/* Recent Meetings List */}
+                  {pastMeetings.length > 0 && (
+                    <div className="mt-4 pt-4 border-t border-zinc-800">
+                      <h4 className="text-xs font-medium text-zinc-500 mb-2 uppercase tracking-wider">
+                        Recent Meetings
+                      </h4>
+                      <div className="space-y-1">
+                        {pastMeetings.slice(0, 5).map(m => (
+                          <div
+                            key={m.id}
+                            className="flex items-center gap-2 py-2 px-3 rounded-lg hover:bg-zinc-800/50 cursor-pointer transition-colors group"
+                            onClick={() => setYoutubeUrl(m.youtube_url)}
+                          >
+                            <Youtube className="h-3 w-3 text-red-500 shrink-0 group-hover:scale-110 transition-transform" />
+                            <span className="text-xs text-zinc-400 truncate flex-1">
+                              {m.title || m.video_id}
+                            </span>
+                            {m.is_processed && (
+                              <Badge className="text-[9px] bg-green-500/10 text-green-400 border-green-500/20 py-0">
+                                Cached
+                              </Badge>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
               {/* Video Player Placeholder / Preview */}
-              <div className="group relative aspect-video w-full overflow-hidden rounded-2xl border border-zinc-800 bg-black shadow-2xl transition-all duration-300 hover:border-zinc-700">
+              <div 
+                className="group relative aspect-video w-full overflow-hidden rounded-2xl border border-zinc-800 bg-black shadow-2xl transition-all duration-300 hover:border-zinc-700 cursor-pointer"
+                onClick={() => {
+                  if (transcriptMetadata?.video_id) {
+                    window.open(`https://www.youtube.com/watch?v=${transcriptMetadata.video_id}`, '_blank');
+                  }
+                }}
+              >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={transcriptMetadata ? `https://img.youtube.com/vi/${transcriptMetadata.video_id}/maxresdefault.jpg` : "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=2070&auto=format&fit=crop"}
@@ -269,14 +369,14 @@ export default function MeetingDocApp() {
                 />
 
                 <div className="absolute inset-0 flex items-center justify-center pb-8">
-                  <div className="flex h-16 w-16 cursor-pointer items-center justify-center rounded-full bg-indigo-600/90 text-white shadow-lg backdrop-blur hover:bg-indigo-600 hover:scale-105 transition-all">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-indigo-600/90 text-white shadow-lg backdrop-blur hover:bg-indigo-600 hover:scale-105 transition-all">
                     <Play className="h-6 w-6 ml-1" />
                   </div>
                 </div>
 
                 <div className="absolute bottom-0 left-0 w-full bg-gradient-to-t from-black/90 to-transparent p-4 pt-12">
                    <div className="flex items-center justify-between text-xs font-semibold text-zinc-400">
-                    <span className="flex items-center gap-1.5"><Clock className="h-3 w-3" /> Ready for processing</span>
+                    <span className="flex items-center gap-1.5"><Clock className="h-3 w-3" /> {transcriptMetadata ? "Watching Resource" : "Ready for processing"}</span>
                     <span>HD 1080p</span>
                   </div>
                 </div>
@@ -291,7 +391,17 @@ export default function MeetingDocApp() {
 
                 <div className="grid grid-cols-2 gap-4">
                   {/* Architecture card */}
-                  <Card className={`border-zinc-800 bg-zinc-900/40 ${!architectureFrame ? "opacity-50 cursor-not-allowed" : ""}`}>
+                  <Card 
+                    className={cn(
+                      "border-zinc-800 bg-zinc-900/40 transition-all duration-300",
+                      architectureFrame ? "cursor-pointer hover:border-indigo-500/50 hover:bg-zinc-800/40" : "opacity-50 cursor-not-allowed"
+                    )}
+                    onClick={() => {
+                        if (architectureFrameIndex !== undefined && architectureFrameIndex >= 0) {
+                          openFrameInTab(architectureFrameIndex);
+                        }
+                    }}
+                  >
                     <CardHeader className="pb-2">
                       <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
                         <span className="p-1.5 rounded-md bg-blue-500/10 text-blue-400">
@@ -312,14 +422,24 @@ export default function MeetingDocApp() {
                           <Bot className="h-6 w-6 text-zinc-700" />
                         </div>
                       )}
-                      <div className="mt-2 text-[10px] text-zinc-500">
+                      <div className="mt-2 text-[10px] text-zinc-500 truncate">
                         {architectureFrame ? architectureFrame.label : "Analysis Pending"}
                       </div>
                     </CardContent>
                   </Card>
 
                   {/* Code card */}
-                  <Card className={`border-zinc-800 bg-zinc-900/40 ${!codeFrame ? "opacity-50 cursor-not-allowed" : ""}`}>
+                  <Card 
+                    className={cn(
+                      "border-zinc-800 bg-zinc-900/40 transition-all duration-300",
+                      codeFrame ? "cursor-pointer hover:border-indigo-500/50 hover:bg-zinc-800/40" : "opacity-50 cursor-not-allowed"
+                    )}
+                    onClick={() => {
+                        if (codeFrameIndex !== undefined && codeFrameIndex >= 0) {
+                          openFrameInTab(codeFrameIndex);
+                        }
+                    }}
+                  >
                     <CardHeader className="pb-2">
                       <CardTitle className="text-sm font-medium text-zinc-300 flex items-center gap-2">
                         <span className="p-1.5 rounded-md bg-green-500/10 text-green-400">
@@ -340,7 +460,7 @@ export default function MeetingDocApp() {
                           <Bot className="h-6 w-6 text-zinc-700" />
                         </div>
                       )}
-                      <div className="mt-2 text-[10px] text-zinc-500">
+                      <div className="mt-2 text-[10px] text-zinc-500 truncate">
                         {codeFrame ? codeFrame.label : "Analysis Pending"}
                       </div>
                     </CardContent>
@@ -355,7 +475,7 @@ export default function MeetingDocApp() {
 
           {/* Right Panel: Documentation Tabs */}
           <ResizablePanel defaultSize={55} minSize={30} className="flex flex-col bg-[#09090b]">
-            <Tabs defaultValue="transcript" className="flex h-full flex-col">
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="flex h-full flex-col">
 
               <div className="flex border-b border-zinc-800 bg-zinc-950/80 px-4 pt-4">
                 <TabsList className="bg-zinc-900/50 border border-zinc-800 mb-0 h-10 w-auto rounded-t-lg rounded-b-none p-1 pb-0">
@@ -504,7 +624,13 @@ export default function MeetingDocApp() {
                   {meetingResult && meetingResult.visual_frames.length > 0 ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
                       {meetingResult.visual_frames.map((frame, i) => (
-                        <Card key={i} className="border-zinc-800 bg-zinc-900/40 overflow-hidden hover:border-zinc-700 transition-all">
+                        <Card 
+                          key={i} 
+                          className={cn(
+                            "border-zinc-800 bg-zinc-900/40 overflow-hidden transition-all duration-300",
+                            glowFrameIndex === i ? "border-indigo-500 ring-2 ring-indigo-500/20 shadow-lg shadow-indigo-500/20" : "hover:border-zinc-700"
+                          )}
+                        >
                           <CardContent className="p-3">
                             {frame.thumbnail_data_url ? (
                               <img
