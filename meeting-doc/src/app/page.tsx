@@ -59,6 +59,7 @@ export default function MeetingDocApp() {
   const [meetingResult, setMeetingResult] = useState<MeetingProcessResult | null>(null);
   const [processingStatus, setProcessingStatus] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [isCached, setIsCached] = useState(false);
 
   // --- ADDED: Missing State Variables identified from your functions ---
   const [pastMeetings, setPastMeetings] = useState<any[]>([]);
@@ -123,6 +124,7 @@ export default function MeetingDocApp() {
       
       if (result.cached && result.cached_result) {
         // Restore full state from cache
+        setIsCached(true);
         setMeetingResult(result.cached_result);
         setFetchedTranscript(result.transcript_text);
         setTranscriptMetadata({
@@ -135,6 +137,7 @@ export default function MeetingDocApp() {
       }
 
       // Not cached - normal flow
+      setIsCached(false);
       setFetchedTranscript(result.transcript_text);
       setTranscriptMetadata({
         video_id: result.video_id,
@@ -376,6 +379,11 @@ export default function MeetingDocApp() {
                       <Badge variant="outline" className="border-zinc-800 bg-zinc-900 text-zinc-400 py-1">
                         {transcriptMetadata.word_count} words
                       </Badge>
+                      {isCached && (
+                        <Badge className="bg-green-500/10 text-green-400 border-green-500/20 py-1 animate-in fade-in duration-300">
+                          ⚡ Loaded from cache
+                        </Badge>
+                      )}
                     </div>
                   )}
 
