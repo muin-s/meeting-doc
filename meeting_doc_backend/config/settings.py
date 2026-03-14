@@ -21,14 +21,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-_@m04kj_q-qm4fa3+jo)hej9z!w$+%(8c$#m@(7w^mx6_x1o=m'
+SECRET_KEY = config("SECRET_KEY")
 
 GEMINI_API_KEY = config("GEMINI_API_KEY", default="")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config("DEBUG", default=False, cast=bool)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="localhost").split(",")
 APPEND_SLASH = False
 
 
@@ -58,8 +58,9 @@ SESSION_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_NAME = "meetingdoc_session"
 SESSION_COOKIE_PATH = "/"
-SESSION_COOKIE_DOMAIN = None
-SESSION_COOKIE_SECURE = False
+SESSION_COOKIE_DOMAIN = config("SESSION_COOKIE_DOMAIN", default=None)
+SESSION_COOKIE_SECURE = config("PRODUCTION", default=False, cast=bool)
+CSRF_COOKIE_SECURE = config("PRODUCTION", default=False, cast=bool)
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

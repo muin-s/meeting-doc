@@ -23,14 +23,13 @@ from apps.meetings.services.frame_grabber import grab_frames_at_timestamps
 from apps.meetings.services.unified_processor import process_meeting
 from apps.meetings.tasks import process_meeting_task
 from celery.result import AsyncResult
+from django_ratelimit.decorators import ratelimit
 
 
 def get_or_create_session_key(request):
     if not request.session.session_key:
         request.session.create()
-    session_key = request.session.session_key
-    print(f"DEBUG session_key: {session_key}")
-    return session_key
+    return request.session.session_key
 
 
 class MeetingViewSet(ModelViewSet):
@@ -84,7 +83,6 @@ class MeetingViewSet(ModelViewSet):
         ).first()
         
         if existing:
-            print(f"Cache HIT for video_id={video_id} session={session_key[:8]}")
             action_items = ActionItem.objects.filter(meeting=existing)
             response_data = {
                 "transcript_text": existing.transcript_text,
@@ -118,8 +116,6 @@ class MeetingViewSet(ModelViewSet):
                 samesite='Lax'
             )
             return response
-        else:
-            print(f"Cache MISS for video_id={video_id} session={session_key[:8]}")
 
         # 4. If NO: run normal transcript fetch
         result = fetch_youtube_transcript(youtube_url)
@@ -227,12 +223,12 @@ class MeetingViewSet(ModelViewSet):
     @action(detail=False, methods=["post"],
             url_path="process-meeting",
             permission_classes=[AllowAny])
+    @ratelimit(key='ip', rate='10/h', method='POST', block=True)
     def process_meeting_view(self, request):
         transcript_text = request.data.get("transcript_text", "")
         transcript_timestamps = request.data.get("transcript_timestamps", [])
         video_id = request.data.get("video_id", "")
         meeting_id = request.data.get("meeting_id", None)
-        print(f"Received meeting_id: {meeting_id}")
 
         if not transcript_text or len(transcript_text.strip()) < 50:
             return Response({"error": "Transcript too short"}, status=400)
