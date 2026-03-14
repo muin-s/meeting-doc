@@ -39,8 +39,9 @@ import { Meeting, MeetingProcessResult } from "@/types";
 import { cn } from "@/lib/utils";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
-
 export default function MeetingDocApp() {
+  // --- Existing State ---
+  const [isProcessing, setIsProcessing] = useState(false);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isFetchingTranscript, setIsFetchingTranscript] = useState(false);
@@ -53,10 +54,15 @@ export default function MeetingDocApp() {
   } | null>(null);
   const [transcriptTimestamps, setTranscriptTimestamps] = useState<Array<{text: string, start: number, duration: number}>>([]);
   
-  // New unified result state
+  // --- New unified result state ---
   const [meetingResult, setMeetingResult] = useState<MeetingProcessResult | null>(null);
   const [processingStatus, setProcessingStatus] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
+
+  // --- ADDED: Missing State Variables identified from your functions ---
+  const [pastMeetings, setPastMeetings] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState("summary");
+  const [glowFrameIndex, setGlowFrameIndex] = useState<number | null>(null);
 
   const PROGRESS_MESSAGES = [
     "Scanning visual frames...",
@@ -67,6 +73,7 @@ export default function MeetingDocApp() {
   ];
   const [progressMsgIndex, setProgressMsgIndex] = useState(0);
 
+  // Interval for changing the loading text
   useEffect(() => {
     if (!isProcessing) return;
     const interval = setInterval(() => {
@@ -75,20 +82,43 @@ export default function MeetingDocApp() {
     return () => clearInterval(interval);
   }, [isProcessing]);
 
+  // Interval for Polling the Backend (Celery/Redis status)
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isProcessing) {
+      interval = setInterval(async () => {
+        console.log("Checking status from Django...");
+        try {
+            // Placeholder: update this to your actual status endpoint
+            const res = await fetch(`${BASE}/api/v1/meetings/status/`);
+            const data = await res.json();
+            if (data.status === 'COMPLETED') {
+                setIsProcessing(false);
+                setMeetingResult(data.result);
+            }
+        } catch (e) {
+            console.error("Polling error", e);
+        }
+      }, 3000);
+    }
+    return () => clearInterval(interval);
+  }, [isProcessing]);
+
   useEffect(() => {
     async function loadData() {
       try {
         setIsLoading(true);
-        // Load initial meetings list (if needed by other UI parts)
-        const meetingList = await getMeetings();
-        setMeetings(meetingList);
+        setError(null);
 
-        // Step 7: Load past meetings on mount
-        const history = await fetch(`${BASE}/api/v1/meetings/history/`).then(r => r.json());
+        // Fetch history from your Django backend
+        const response = await fetch(`${BASE}/api/v1/meetings/history/`);
+        if (!response.ok) throw new Error("Backend unreachable");
+        
+        const history = await response.json();
         setPastMeetings(Array.isArray(history) ? history : []);
       } catch (err) {
         console.error("Failed to fetch meetings:", err);
-        setError("Unable to connect to the backend. Please ensure the Django server is running at http://127.0.0.1:8000");
+        setError("Unable to connect to the backend at " + BASE);
       } finally {
         setIsLoading(false);
       }
@@ -102,7 +132,6 @@ export default function MeetingDocApp() {
     setGlowFrameIndex(frameIndex);
     setTimeout(() => setGlowFrameIndex(null), 1000);
   }
-
   const handleFetchTranscript = async () => {
     if (!youtubeUrl) return;
     try {

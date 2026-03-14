@@ -1,128 +1,99 @@
 import json
 import logging
+import base64
 from google import genai
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
 def process_meeting(transcript_text, frames, video_id):
-    """
-    Unified processor that uses Gemini Vision to analyze transcript and visual frames.
-    """
-    if not settings.GEMINI_API_KEY:
-        return {
-            "error": "Gemini API key is not configured.",
-            "summary": "Configuration error",
-            "action_items": [],
-            "key_decisions": [],
-            "participants_detected": [],
-            "visual_frames": []
-        }
-
     try:
         client = genai.Client(api_key=settings.GEMINI_API_KEY)
         
-        # Build contents list for Gemini Vision
-        parts = []
-        
         prompt = f"""You are an expert meeting analyst.
-Analyze this meeting transcript and the visual frames captured
-at key moments during the meeting.
+Analyze this meeting transcript and the visual frames captured at key moments.
 
 Return ONLY valid JSON with exactly this structure:
 {{
-  "summary": "2-3 paragraph clean summary of the meeting",
+  "summary": "2-3 paragraph clean summary",
   "action_items": [
     {{
       "description": "what needs to be done",
       "assignee": "person name or null",
       "priority": "high or medium or low",
-      "due_date": "date string or null"
+      "due_date": null
     }}
   ],
-  "key_decisions": ["decision 1", "decision 2"],
-  "participants_detected": ["name1", "name2"],
+  "key_decisions": ["decision 1"],
+  "participants_detected": ["name1"],
   "visual_frames": [
     {{
-      "timestamp_seconds": 135,
-      "label": "short label max 4 words",
+      "timestamp_seconds": 0,
+      "label": "max 4 words",
       "category": "architecture or code or task_list or data or discussion",
-      "description": "one sentence what is visible in this frame",
-      "has_diagram": true or false,
-      "has_code": true or false
+      "description": "one sentence description",
+      "has_diagram": false,
+      "has_code": false
     }}
   ]
 }}
 
-Return ONLY the JSON. No markdown. No explanation. No code blocks.
+Return ONLY the JSON. No markdown. No explanation.
 
 TRANSCRIPT:
-{transcript_text}
+{transcript_text}"""
 
-The visual frames are attached as images in order of timestamp."""
+        parts = [{"text": prompt}]
 
-        parts.append({"text": prompt})
-        
-        # Add frames that have data
-        valid_frames = [f for f in frames if f.get("thumbnail_base64")]
-        for frame in valid_frames:
-            parts.append({
-                "inline_data": {
-                    "mime_type": "image/jpeg",
-                    "data": frame["thumbnail_base64"]
-                }
-            })
+        for frame in frames:
+            if frame.get("thumbnail_base64"):
+                parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": frame["thumbnail_base64"]
+                    }
+                })
 
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=parts
+            contents=[{"role": "user", "parts": parts}]
         )
         
-        response_text = response.text.strip()
-        
-        # Clean up JSON if it contains markdown markers
-        if response_text.startswith("```json"):
-            response_text = response_text[7:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-        elif response_text.startswith("```"):
-            response_text = response_text[3:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-        
-        response_text = response_text.strip()
-        
-        try:
-            result = json.loads(response_text)
-            
-            # Merge frame metadata and add youtube URLs
-            ai_visual_frames = result.get("visual_frames", [])
-            for i, ai_frame in enumerate(ai_visual_frames):
-                if i < len(valid_frames):
-                    ai_frame["thumbnail_data_url"] = valid_frames[i]["thumbnail_data_url"]
-                    ai_frame["youtube_url"] = f"https://www.youtube.com/watch?v={video_id}&t={valid_frames[i]['timestamp_seconds']}"
+        result_text = response.text.strip()
+        # Strip markdown if present
+        if result_text.startswith("```"):
+            # Find the first and last triple backticks
+            start_index = result_text.find("```")
+            end_index = result_text.rfind("```")
+            if start_index != -1 and end_index != -1 and start_index != end_index:
+                content = result_text[start_index+3:end_index].strip()
+                if content.startswith("json"):
+                    result_text = content[4:].strip()
                 else:
-                    # Fallback if AI returned more frames than provided
-                    ai_frame["thumbnail_data_url"] = None
-                    ai_frame["youtube_url"] = f"https://www.youtube.com/watch?v={video_id}"
-            
-            # Ensure visual_frames is exactly as many as we sent (or at least capped)
-            # Actually, let's keep what AI returned but ensure URLs are correct.
-            
-            return result
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI JSON response: {str(e)}")
-            logger.debug(f"Raw response: {response_text}")
-            raise Exception("Invalid JSON format from AI")
-
+                    result_text = content
+        
+        result = json.loads(result_text)
+        
+        # Merge thumbnail data back into visual_frames
+        for i, vf in enumerate(result.get("visual_frames", [])):
+            if i < len(frames):
+                vf["thumbnail_data_url"] = frames[i].get("thumbnail_data_url")
+                vf["youtube_url"] = f"https://www.youtube.com/watch?v={video_id}&t={vf.get('timestamp_seconds', 0)}"
+        
+        return result
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parse failed: {e}")
+        return _empty_result()
     except Exception as e:
-        logger.error(f"Failed to process meeting with Gemini: {str(e)}")
-        return {
-            "error": f"Failed to parse AI response: {str(e)}",
-            "summary": "Processing failed due to an error.",
-            "action_items": [],
-            "key_decisions": [],
-            "participants_detected": [],
-            "visual_frames": []
-        }
+        logger.error(f"Failed to process meeting with Gemini: {e}")
+        return _empty_result()
+
+def _empty_result():
+    return {
+        "summary": "Processing failed due to an error.",
+        "action_items": [],
+        "key_decisions": [],
+        "participants_detected": [],
+        "visual_frames": []
+    }
