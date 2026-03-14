@@ -1,6 +1,6 @@
 import { Meeting, Transcript, ActionItem, Participant, KeyMoment, MeetingProcessResult } from "@/types";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+const BASE = "";
 
 async function fetcher<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${url}`, {
@@ -36,15 +36,15 @@ export async function createMeeting(data: Partial<Meeting>): Promise<Meeting> {
 }
 
 export async function getActionItems(meetingId: string): Promise<ActionItem[]> {
-  return fetcher<ActionItem[]>(`/api/v1/action-items/?meeting=${meetingId}`);
+  return fetcher<ActionItem[]>(`/api/v1/action-items/?meeting=${meetingId}/`);
 }
 
 export async function getTranscripts(meetingId: string): Promise<Transcript[]> {
-  return fetcher<Transcript[]>(`/api/v1/transcripts/?meeting=${meetingId}`);
+  return fetcher<Transcript[]>(`/api/v1/transcripts/?meeting=${meetingId}/`);
 }
 
 export async function getParticipants(meetingId: string): Promise<Participant[]> {
-  return fetcher<Participant[]>(`/api/v1/participants/?meeting=${meetingId}`);
+  return fetcher<Participant[]>(`/api/v1/participants/?meeting=${meetingId}/`);
 }
 
 export async function fetchYoutubeTranscript(url: string): Promise<{
@@ -92,7 +92,8 @@ export async function analyzeContext(
 export async function processMeeting(
   transcriptText: string,
   transcriptTimestamps: Array<{ text: string; start: number; duration: number }>,
-  videoId: string
+  videoId: string,
+  meetingId: string
 ): Promise<any> {
   return fetcher("/api/v1/meetings/process-meeting/", {
     method: "POST",
@@ -100,6 +101,7 @@ export async function processMeeting(
       transcript_text: transcriptText,
       transcript_timestamps: transcriptTimestamps,
       video_id: videoId,
+      meeting_id: meetingId,
     }),
   });
 }

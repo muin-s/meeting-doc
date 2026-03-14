@@ -28,7 +28,9 @@ from celery.result import AsyncResult
 def get_or_create_session_key(request):
     if not request.session.session_key:
         request.session.create()
-    return request.session.session_key
+    session_key = request.session.session_key
+    print(f"DEBUG session_key: {session_key}")
+    return session_key
 
 
 class MeetingViewSet(ModelViewSet):
@@ -74,23 +76,50 @@ class MeetingViewSet(ModelViewSet):
             is_processed=True
         ).first()
         
-        if meeting:
-            # 3. If YES: return cached result immediately
-            action_items = ActionItemSerializer(meeting.action_items.all(), many=True).data
-            return Response({
-                "transcript_text": meeting.transcript_text,
-                "video_id": meeting.video_id,
-                "word_count": meeting.word_count,
-                "transcript_timestamps": [], # Not needed if cached
+        # 3. If YES: return cached result immediately
+        existing = Meeting.objects.filter(
+            video_id=video_id,
+            session_key=session_key,
+            is_processed=True
+        ).first()
+        
+        if existing:
+            print(f"Cache HIT for video_id={video_id} session={session_key[:8]}")
+            action_items = ActionItem.objects.filter(meeting=existing)
+            response_data = {
+                "transcript_text": existing.transcript_text,
+                "video_id": existing.video_id,
+                "word_count": existing.word_count,
+                "transcript_timestamps": [],
                 "cached": True,
+                "meeting_id": str(existing.id),
                 "cached_result": {
-                    "summary": meeting.summary,
-                    "action_items": action_items,
-                    "key_decisions": meeting.key_decisions,
-                    "participants_detected": meeting.participants_detected,
-                    "visual_frames": meeting.visual_frames
+                    "summary": existing.summary,
+                    "action_items": [
+                        {
+                            "description": item.description,
+                            "assignee": item.assignee_name,
+                            "priority": item.priority,
+                            "due_date": str(item.due_date) if item.due_date else None
+                        }
+                        for item in action_items
+                    ],
+                    "key_decisions": existing.key_decisions,
+                    "participants_detected": existing.participants_detected,
+                    "visual_frames": existing.visual_frames
                 }
-            })
+            }
+            response = Response(response_data)
+            response.set_cookie(
+                'sessionid',
+                request.session.session_key,
+                max_age=60*60*24*30,
+                httponly=True,
+                samesite='Lax'
+            )
+            return response
+        else:
+            print(f"Cache MISS for video_id={video_id} session={session_key[:8]}")
 
         # 4. If NO: run normal transcript fetch
         result = fetch_youtube_transcript(youtube_url)
@@ -109,8 +138,21 @@ class MeetingViewSet(ModelViewSet):
             }
         )
 
+        # 5. Return result with meeting_id
+        meeting = Meeting.objects.get(video_id=video_id, session_key=session_key)
+        request.session.save()
         result["cached"] = False
-        return Response(result)
+        result["meeting_id"] = str(meeting.id)
+        
+        response = Response(result)
+        response.set_cookie(
+            'sessionid',
+            request.session.session_key,
+            max_age=60*60*24*30,
+            httponly=True,
+            samesite='Lax'
+        )
+        return response
 
     @action(detail=False, methods=["post"],
             url_path="process-transcript",
@@ -190,6 +232,7 @@ class MeetingViewSet(ModelViewSet):
         transcript_timestamps = request.data.get("transcript_timestamps", [])
         video_id = request.data.get("video_id", "")
         meeting_id = request.data.get("meeting_id", None)
+        print(f"Received meeting_id: {meeting_id}")
 
         if not transcript_text or len(transcript_text.strip()) < 50:
             return Response({"error": "Transcript too short"}, status=400)
@@ -210,11 +253,20 @@ class MeetingViewSet(ModelViewSet):
                 meeting_id=meeting_id,
             )
 
-            return Response({
+            request.session.save()
+            response = Response({
                 "task_id": task.id,
                 "status": "processing",
                 "message": "Processing started in background"
             })
+            response.set_cookie(
+                'sessionid',
+                request.session.session_key,
+                max_age=60*60*24*30,
+                httponly=True,
+                samesite='Lax'
+            )
+            return response
         except Exception as e:
             # Redis not available fallback — run synchronously
             import logging
@@ -288,7 +340,16 @@ class MeetingViewSet(ModelViewSet):
             is_processed=True
         ).order_by('-created_at')[:20]
         serializer = MeetingListSerializer(queryset, many=True)
-        return Response(serializer.data)
+        request.session.save()
+        response = Response(serializer.data)
+        response.set_cookie(
+            'sessionid',
+            request.session.session_key,
+            max_age=60*60*24*30,
+            httponly=True,
+            samesite='Lax'
+        )
+        return response
 
     @action(detail=True, methods=["get"], url_path="transcripts")
     def transcripts(self, request, pk=None):

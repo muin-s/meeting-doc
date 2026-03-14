@@ -53,6 +53,7 @@ export default function MeetingDocApp() {
     word_count: number;
   } | null>(null);
   const [transcriptTimestamps, setTranscriptTimestamps] = useState<Array<{text: string, start: number, duration: number}>>([]);
+  const [meetingId, setMeetingId] = useState<string | null>(null);
   
   // --- New unified result state ---
   const [meetingResult, setMeetingResult] = useState<MeetingProcessResult | null>(null);
@@ -82,27 +83,7 @@ export default function MeetingDocApp() {
     return () => clearInterval(interval);
   }, [isProcessing]);
 
-  // Interval for Polling the Backend (Celery/Redis status)
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isProcessing) {
-      interval = setInterval(async () => {
-        console.log("Checking status from Django...");
-        try {
-            // Placeholder: update this to your actual status endpoint
-            const res = await fetch(`${BASE}/api/v1/meetings/status/`);
-            const data = await res.json();
-            if (data.status === 'COMPLETED') {
-                setIsProcessing(false);
-                setMeetingResult(data.result);
-            }
-        } catch (e) {
-            console.error("Polling error", e);
-        }
-      }, 3000);
-    }
-    return () => clearInterval(interval);
-  }, [isProcessing]);
+
 
   useEffect(() => {
     async function loadData() {
@@ -140,20 +121,32 @@ export default function MeetingDocApp() {
       setMeetingResult(null); // Clear previous results
       const result = await fetchYoutubeTranscript(youtubeUrl) as any;
       
+      if (result.cached && result.cached_result) {
+        // Restore full state from cache
+        setMeetingResult(result.cached_result);
+        setFetchedTranscript(result.transcript_text);
+        setTranscriptMetadata({
+          video_id: result.video_id,
+          word_count: result.word_count,
+        });
+        setMeetingId(result.meeting_id);
+        setActiveTab("summary"); // jump straight to summary
+        return; // skip everything else
+      }
+
+      // Not cached - normal flow
       setFetchedTranscript(result.transcript_text);
       setTranscriptMetadata({
         video_id: result.video_id,
         word_count: result.word_count,
       });
 
-      if (result.transcript_timestamps) {
-        setTranscriptTimestamps(result.transcript_timestamps);
+      if (result.meeting_id) {
+        setMeetingId(result.meeting_id);
       }
 
-      // Step 7: Check if response has cached=true
-      if (result.cached && result.cached_result) {
-        setMeetingResult(result.cached_result);
-        setActiveTab("summary");
+      if (result.transcript_timestamps) {
+        setTranscriptTimestamps(result.transcript_timestamps);
       }
     } catch (err: any) {
       console.error("Failed to fetch transcript:", err);
@@ -177,7 +170,8 @@ export default function MeetingDocApp() {
       const response = await processMeeting(
         fetchedTranscript,
         transcriptTimestamps,
-        transcriptMetadata.video_id
+        transcriptMetadata.video_id,
+        meetingId || ""
       );
 
       if (response.task_id) {
